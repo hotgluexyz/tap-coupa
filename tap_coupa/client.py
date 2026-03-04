@@ -138,11 +138,21 @@ class CoupaStream(RESTStream):
         else:
             params["offset"] = 1  # Start at offset 1 as shown in curl example
 
+        replication_key_value = None
         if self.replication_key:
             start_date = self.get_starting_timestamp(context)
             # Format date for API (use updated_at[gt] with underscore in URL)
             if start_date:
-                params["updated_at[gt]"] = start_date.strftime("%Y-%m-%d")
+                # Use full ISO format with time
+                replication_key_value = start_date.isoformat()
+                params["updated_at[gt]"] = replication_key_value
+
+        # Log endpoint, offset, limit, and replication key value
+        endpoint = f"{self.url_base}{self.path}"
+        log_msg = f"Calling endpoint: {endpoint} with offset={params.get('offset')}, limit={params.get('limit')}"
+        if replication_key_value:
+            log_msg += f", {self.replication_key}={replication_key_value}"
+        self.logger.info(log_msg)
 
         return params
 
