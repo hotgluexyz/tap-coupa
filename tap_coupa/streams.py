@@ -9,12 +9,12 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from hotglue_singer_sdk import typing as th  # JSON Schema typing helpers
 import requests
 
-from tap_coupa.client import CoupaStream
+from tap_coupa.client import CoupaStream, BulkParentStream
 
 logger = logging.getLogger(__name__)
 
 
-class InvoicesStream(CoupaStream):
+class InvoicesStream(BulkParentStream):
     """Define invoices stream."""
 
     name = "invoices"
@@ -427,7 +427,7 @@ class InvoicesStream(CoupaStream):
     def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
         """Return a context dictionary for child streams."""
         return {
-            "invoice_id": record["id"],
+            "invoice_ids": [record["id"]],
         }
 
 
@@ -526,20 +526,16 @@ class InvoiceScansStream(CoupaStream):
             }
 
     def sync(self, context: Optional[dict] = None) -> None:
-        """Override sync to collect invoice IDs in batches and download in parallel."""
+        """Override sync to download PDFs for invoice IDs in bulk context."""
         if not self.selected and not self.has_selected_descendents:
             return
 
-        # Find parent stream
-        parent_stream = None
-        if self.parent_stream_type:
-            for stream in self._tap.streams.values():
-                if isinstance(stream, self.parent_stream_type):
-                    parent_stream = stream
-                    break
+        if not context or "invoice_ids" not in context:
+            logger.warning("No invoice_ids in context, skipping...")
+            return
 
-        if not parent_stream:
-            logger.warning("Parent stream not found")
+        invoice_ids = context["invoice_ids"]
+        if not invoice_ids:
             return
 
         # Set up output directory
@@ -547,80 +543,31 @@ class InvoiceScansStream(CoupaStream):
         output_path = Path(sync_output_folder) / "invoice_scans"
         output_path.mkdir(parents=True, exist_ok=True)
 
-        # Process invoices in batches of 500
-        batch_size = 500
-        invoice_batch = []
-        total_processed = 0
-
-        logger.info(f"Starting to process invoice scans in batches of {batch_size}...")
+        logger.info(f"Downloading {len(invoice_ids)} invoice scans in parallel...")
         
-        # Iterate through parent stream records and process in batches
-        for record in parent_stream.get_records(context):
-            if "id" in record:
-                invoice_batch.append(record["id"])
-                
-                # When batch reaches size, process it
-                if len(invoice_batch) >= batch_size:
-                    total_processed += self._process_batch(invoice_batch, output_path, total_processed)
-                    invoice_batch = []  # Clear batch for next iteration
-        
-        # Process remaining invoices in the last batch
-        if invoice_batch:
-            total_processed += self._process_batch(invoice_batch, output_path, total_processed)
-        
-        logger.info(f"Completed downloading {total_processed} invoice scans")
-
-    def _process_batch(self, invoice_ids: list, output_path: Path, total_processed: int) -> int:
-        """Process a batch of invoice IDs in parallel with 15 workers."""
-        batch_num = (total_processed // 500) + 1
-        logger.info(f"Processing batch {batch_num}: {len(invoice_ids)} invoices...")
-        
+        # Download all invoice scans in parallel with 15 workers
         completed = 0
         with ThreadPoolExecutor(max_workers=15) as executor:
-            # Submit all download tasks for this batch
+            # Submit all download tasks
             future_to_invoice = {
                 executor.submit(self._download_single_scan, invoice_id, output_path): invoice_id
                 for invoice_id in invoice_ids
             }
             
-            # Process results as they complete and write records
+            # Process results as they complete (no record writing - just download PDFs)
             for future in as_completed(future_to_invoice):
                 invoice_id = future_to_invoice[future]
                 try:
                     result = future.result()
-                    # Write the record using the SDK's internal method
-                    self._write_record_message(result)
                     completed += 1
                     if completed % 10 == 0:
-                        logger.info(f"Batch {batch_num}: Downloaded {completed}/{len(invoice_ids)} invoice scans...")
+                        logger.info(f"Downloaded {completed}/{len(invoice_ids)} invoice scans...")
                 except Exception as e:
                     logger.error(f"Exception downloading scan for invoice {invoice_id}: {e}")
-                    error_record = {
-                        "invoice_id": invoice_id,
-                        "file_path": None,
-                        "file_name": f"{invoice_id}.pdf",
-                        "download_status": "error",
-                        "error_message": str(e),
-                    }
-                    self._write_record_message(error_record)
                     completed += 1
         
-        logger.info(f"Batch {batch_num}: Completed {completed}/{len(invoice_ids)} invoice scans")
-        return completed
+        logger.info(f"Completed downloading {completed}/{len(invoice_ids)} invoice scans")
 
     def get_records(self, context: Optional[dict]) -> Iterable[dict]:
-        """Download PDFs - not used when sync is overridden."""
-        # This method is not used when sync() is overridden
-        # But kept for compatibility
-        if not context or "invoice_id" not in context:
-            return
-
-        invoice_id = context["invoice_id"]
-        sync_output_folder = self.get_sync_output_folder()
-        
-        # Create output directory structure: {sync_output_folder}/invoice_scans/
-        output_path = Path(sync_output_folder) / "invoice_scans"
-        output_path.mkdir(parents=True, exist_ok=True)
-
-        # For single invoice, download directly
-        yield self._download_single_scan(invoice_id, output_path)
+        """Not used - downloads are handled in sync() method."""
+        return []
