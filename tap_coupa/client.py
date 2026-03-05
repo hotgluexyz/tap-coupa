@@ -264,7 +264,7 @@ class CoupaStream(RESTStream):
 class BulkParentStream(CoupaStream):
     """Parent stream that batches child contexts before syncing children."""
 
-    child_context_keys = ["invoice_ids"]
+    child_context_keys = ["invoice_ids", "invoice_image_scans"]
 
     @property
     def child_context_size(self):

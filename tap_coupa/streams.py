@@ -428,6 +428,7 @@ class InvoicesStream(BulkParentStream):
         """Return a context dictionary for child streams."""
         return {
             "invoice_ids": [record["id"]],
+            "invoice_image_scans": [(record["id"], record.get("image-scan"))],
         }
 
 
@@ -460,25 +461,57 @@ class InvoiceScansStream(CoupaStream):
         # This method is overridden in get_records instead
         return []
 
-    def _download_single_scan(self, invoice_id: int, output_path: Path) -> dict:
-        """Download a single invoice scan PDF."""
-        # Construct the URL
+    @staticmethod
+    def _extension_from_image_scan(image_scan: str) -> Optional[str]:
+        """Extract file extension from invoice image-scan path (e.g. '.../file.pdf' -> '.pdf')."""
+        if not image_scan or not isinstance(image_scan, str):
+            return None
+        s = image_scan.strip()
+        if "." not in s:
+            return None
+        ext = s.rsplit(".", 1)[-1].lower()
+        if not ext or len(ext) > 5:
+            return None
+        return f".{ext}"
+
+    @staticmethod
+    def _extension_from_content_type(content_type: str) -> str:
+        """Map Content-Type to file extension. Default to .pdf."""
+        ct = (content_type or "").strip().lower()
+        if "pdf" in ct or "application/pdf" in ct:
+            return ".pdf"
+        if "spreadsheetml" in ct or "vnd.openxmlformats-officedocument.spreadsheetml" in ct or "xlsx" in ct:
+            return ".xlsx"
+        if "vnd.ms-excel" in ct:
+            return ".xls"
+        if "png" in ct or "image/png" in ct:
+            return ".png"
+        if "jpeg" in ct or "jpg" in ct or "image/jpeg" in ct:
+            return ".jpg"
+        if "gif" in ct or "image/gif" in ct:
+            return ".gif"
+        if "webp" in ct or "image/webp" in ct:
+            return ".webp"
+        if "tiff" in ct or "image/tiff" in ct:
+            return ".tiff"
+        # fallback
+        return ".pdf"
+
+    def _download_single_scan(
+        self, invoice_id: int, output_path: Path, image_scan: Optional[str] = None
+    ) -> dict:
+        """Download a single invoice scan. Extension from parent invoice image-scan path, else Content-Type."""
         url = f"{self.url_base}invoices/{invoice_id}/retrieve_image_scan"
-        
-        # Prepare request
         headers = self.http_headers.copy()
         headers.update(self.authenticator.auth_headers)
-        
-        # File name: {invoiceId}.pdf in invoice_scans/ subdirectory
+
         file_name = f"{invoice_id}.pdf"
         file_path = output_path / file_name
 
         try:
-            # Make request
             response = self.requests_session.get(url, headers=headers, timeout=self.timeout)
-            
+
             if response.status_code == 404:
-                # Invoice scan doesn't exist - return record with status
                 return {
                     "invoice_id": invoice_id,
                     "file_path": None,
@@ -487,7 +520,6 @@ class InvoiceScansStream(CoupaStream):
                     "error_message": None,
                 }
 
-            # Validate response
             if response.status_code >= 400:
                 error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
                 logger.warning(f"Failed to download scan for invoice {invoice_id}: {error_msg}")
@@ -499,7 +531,19 @@ class InvoiceScansStream(CoupaStream):
                     "error_message": error_msg,
                 }
 
-            # Write PDF file
+            # Prefer extension from parent invoice image-scan path (e.g. .../file.pdf -> .pdf)
+            ext = self._extension_from_image_scan(image_scan)
+            if not ext:
+                if not image_scan or not str(image_scan).strip():
+                    logger.warning(
+                        "Invoice %s has no image-scan attribute; using Content-Type for file extension",
+                        invoice_id,
+                    )
+                content_type = response.headers.get("Content-Type", "")
+                ext = self._extension_from_content_type(content_type)
+            file_name = f"{invoice_id}{ext}"
+            file_path = output_path / file_name
+
             with open(file_path, "wb") as f:
                 f.write(response.content)
 
@@ -538,19 +582,25 @@ class InvoiceScansStream(CoupaStream):
         if not invoice_ids:
             return
 
-        # Set up output directory
+        # Map invoice_id -> image-scan path from parent (for file extension)
+        image_scans = context.get("invoice_image_scans") or []
+        id_to_image_scan = dict(image_scans) if image_scans else {}
+
         sync_output_folder = self.get_sync_output_folder()
         output_path = Path(sync_output_folder) / "invoice_scans"
         output_path.mkdir(parents=True, exist_ok=True)
 
         logger.info(f"Downloading {len(invoice_ids)} invoice scans in parallel...")
-        
-        # Download all invoice scans in parallel with 15 workers
+
         completed = 0
         with ThreadPoolExecutor(max_workers=15) as executor:
-            # Submit all download tasks
             future_to_invoice = {
-                executor.submit(self._download_single_scan, invoice_id, output_path): invoice_id
+                executor.submit(
+                    self._download_single_scan,
+                    invoice_id,
+                    output_path,
+                    id_to_image_scan.get(invoice_id),
+                ): invoice_id
                 for invoice_id in invoice_ids
             }
             
