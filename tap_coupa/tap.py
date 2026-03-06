@@ -6,11 +6,12 @@ from hotglue_singer_sdk import Stream, Tap
 from hotglue_singer_sdk import typing as th  # JSON schema typing helpers
 from hotglue_singer_sdk.helpers.capabilities import AlertingLevel
 
-from tap_coupa.streams import InvoicesStream, InvoiceScansStream
+from tap_coupa.streams import InvoicesStream, InvoiceScansStream, InvoiceAttachmentsStream
 
 STREAM_TYPES = [
     InvoicesStream,
     InvoiceScansStream,
+    InvoiceAttachmentsStream,
 ]
 
 

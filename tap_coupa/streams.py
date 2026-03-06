@@ -424,11 +424,36 @@ class InvoicesStream(BulkParentStream):
         th.Property("dispute-reasons", th.ArrayType(th.CustomType({"type": ["object", "string"]}))),
     ).to_dict()
 
+    @staticmethod
+    def _filename_from_attachment(att: dict) -> Optional[str]:
+        """Get filename from attachment: explicit filename or last segment of file/file-url path."""
+        fname = att.get("filename") or att.get("file-name") or att.get("name")
+        if fname and str(fname).strip():
+            return fname.strip()
+        path = att.get("file") or att.get("file-url") or ""
+        if path and isinstance(path, str):
+            segment = path.rstrip("/").split("/")[-1]
+            if segment:
+                return segment
+        return None
+
     def get_child_context(self, record: dict, context: Optional[dict]) -> dict:
         """Return a context dictionary for child streams."""
+        invoice_id = record["id"]
+        attachments_payload = []
+        for att in record.get("attachments") or []:
+            if isinstance(att, dict):
+                att_id = att.get("id")
+                fname = self._filename_from_attachment(att)
+            else:
+                att_id = att
+                fname = None
+            if att_id is not None:
+                attachments_payload.append((invoice_id, att_id, fname))
         return {
-            "invoice_ids": [record["id"]],
-            "invoice_image_scans": [(record["id"], record.get("image-scan"))],
+            "invoice_ids": [invoice_id],
+            "invoice_image_scans": [(invoice_id, record.get("image-scan"))],
+            "invoice_attachments": attachments_payload,
         }
 
 
@@ -617,6 +642,183 @@ class InvoiceScansStream(CoupaStream):
                     completed += 1
         
         logger.info(f"Completed downloading {completed}/{len(invoice_ids)} invoice scans")
+
+    def get_records(self, context: Optional[dict]) -> Iterable[dict]:
+        """Not used - downloads are handled in sync() method."""
+        return []
+
+
+class InvoiceAttachmentsStream(CoupaStream):
+    """Define invoice attachments stream that downloads attachment files per invoice."""
+
+    name = "invoice_attachments"
+    path = "invoices/{invoice_id}/attachments/{attachment_id}"
+    primary_keys = ["invoice_id", "attachment_id"]
+    parent_stream_type = InvoicesStream
+
+    schema = th.PropertiesList(
+        th.Property("invoice_id", th.IntegerType),
+        th.Property("attachment_id", th.IntegerType),
+        th.Property("file_path", th.StringType),
+        th.Property("file_name", th.StringType),
+        th.Property("download_status", th.StringType),
+        th.Property("error_message", th.StringType),
+    ).to_dict()
+
+    def get_sync_output_folder(self) -> str:
+        """Determine sync output folder based on JOB_ID environment variable."""
+        job_id = os.environ.get("JOB_ID")
+        if job_id:
+            return f"/home/hotglue/{job_id}/sync-output"
+        return "."
+
+    def parse_response(self, response: requests.Response) -> Iterable[dict]:
+        """Handle binary response - not used for this stream."""
+        return []
+
+    def _download_single_attachment(
+        self,
+        invoice_id: int,
+        attachment_id: int,
+        output_dir: Path,
+        filename: Optional[str] = None,
+    ) -> dict:
+        """Download a single invoice attachment to invoice_attachments/{invoice_id}/{file_name}."""
+        if not filename or not str(filename).strip():
+            logger.warning(
+                "Attachment %s for invoice %s has empty filename, skipping",
+                attachment_id,
+                invoice_id,
+            )
+            return {
+                "invoice_id": invoice_id,
+                "attachment_id": attachment_id,
+                "file_path": None,
+                "file_name": None,
+                "download_status": "skipped",
+                "error_message": "filename is empty",
+            }
+
+        url = f"{self.url_base}invoices/{invoice_id}/attachments/{attachment_id}"
+        headers = self.http_headers.copy()
+        headers.update(self.authenticator.auth_headers)
+
+        file_name = filename.strip()
+        file_path = output_dir / file_name
+
+        try:
+            response = self.requests_session.get(url, headers=headers, timeout=self.timeout)
+
+            if response.status_code == 404:
+                return {
+                    "invoice_id": invoice_id,
+                    "attachment_id": attachment_id,
+                    "file_path": None,
+                    "file_name": file_name,
+                    "download_status": "not_found",
+                    "error_message": None,
+                }
+
+            if response.status_code >= 400:
+                error_msg = f"HTTP {response.status_code}: {response.text[:200]}"
+                logger.warning(
+                    "Failed to download attachment %s for invoice %s: %s",
+                    attachment_id,
+                    invoice_id,
+                    error_msg,
+                )
+                return {
+                    "invoice_id": invoice_id,
+                    "attachment_id": attachment_id,
+                    "file_path": None,
+                    "file_name": file_name,
+                    "download_status": "error",
+                    "error_message": error_msg,
+                }
+
+            with open(file_path, "wb") as f:
+                f.write(response.content)
+
+            logger.info(
+                "Downloaded attachment %s for invoice %s to %s",
+                attachment_id,
+                invoice_id,
+                file_path,
+            )
+            return {
+                "invoice_id": invoice_id,
+                "attachment_id": attachment_id,
+                "file_path": str(file_path),
+                "file_name": file_name,
+                "download_status": "success",
+                "error_message": None,
+            }
+
+        except Exception as e:
+            error_msg = str(e)
+            logger.error(
+                "Error downloading attachment %s for invoice %s: %s",
+                attachment_id,
+                invoice_id,
+                error_msg,
+            )
+            return {
+                "invoice_id": invoice_id,
+                "attachment_id": attachment_id,
+                "file_path": None,
+                "file_name": file_name,
+                "download_status": "error",
+                "error_message": error_msg,
+            }
+
+    def sync(self, context: Optional[dict] = None) -> None:
+        """Override sync to download attachment files to invoice_attachments/{invoice_id}/{file_name}."""
+        if not self.selected and not self.has_selected_descendents:
+            return
+
+        if not context or "invoice_attachments" not in context:
+            logger.warning("No invoice_attachments in context, skipping...")
+            return
+
+        items = context["invoice_attachments"]
+        if not items:
+            return
+
+        sync_output_folder = self.get_sync_output_folder()
+        base_path = Path(sync_output_folder) / "invoice_attachments"
+
+        logger.info("Downloading %s invoice attachment(s) in parallel...", len(items))
+
+        completed = 0
+        with ThreadPoolExecutor(max_workers=15) as executor:
+            futures = []
+            for invoice_id, attachment_id, filename in items:
+                output_dir = base_path / str(invoice_id)
+                output_dir.mkdir(parents=True, exist_ok=True)
+                fut = executor.submit(
+                    self._download_single_attachment,
+                    invoice_id,
+                    attachment_id,
+                    output_dir,
+                    filename,
+                )
+                futures.append((fut, invoice_id, attachment_id))
+            for future, invoice_id, attachment_id in futures:
+                try:
+                    future.result()
+                    completed += 1
+                    if completed % 10 == 0:
+                        logger.info("Downloaded %s/%s invoice attachments...", completed, len(items))
+                except Exception as e:
+                    logger.error(
+                        "Exception downloading attachment %s for invoice %s: %s",
+                        attachment_id,
+                        invoice_id,
+                        e,
+                    )
+                    completed += 1
+
+        logger.info("Completed downloading %s/%s invoice attachments", completed, len(items))
 
     def get_records(self, context: Optional[dict]) -> Iterable[dict]:
         """Not used - downloads are handled in sync() method."""
