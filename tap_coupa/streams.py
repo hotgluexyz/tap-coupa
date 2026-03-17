@@ -2,14 +2,18 @@
 
 import os
 import logging
-from typing import Optional, Iterable
+import queue
+import threading
+import zipfile
+from datetime import datetime
+from typing import Any, Optional, Iterable, Tuple
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from hotglue_singer_sdk import typing as th  # JSON Schema typing helpers
 import requests
 
-from tap_coupa.client import CoupaStream, BulkParentStream
+from tap_coupa.client import BATCH_SIZE, CoupaStream, BulkParentStream
 
 logger = logging.getLogger(__name__)
 
@@ -456,6 +460,106 @@ class InvoicesStream(BulkParentStream):
             "invoice_attachments": attachments_payload,
         }
 
+    def _fetch_one_page(
+        self, context: Optional[dict], page_token: Optional[Any]
+    ) -> Tuple[Optional[Any], list, Optional[Any]]:
+        """Fetch one page of invoices. Returns (page_token_used, records, next_page_token)."""
+        url = f"{self.url_base}{self.path}"
+        params = self.get_url_params(context, page_token)
+        headers = self.http_headers.copy()
+        headers.update(self.authenticator.auth_headers)
+
+        def do_request():
+            return self.requests_session.get(
+                url, params=params, headers=headers, timeout=self.timeout
+            )
+
+        response = self.request_decorator(do_request)()
+        offset = params.get("offset", "")
+        limit = params.get("limit", "")
+        try:
+            self.validate_response(response)
+            records = list(self.parse_response(response))
+            next_token = self.get_next_page_token(response, page_token)
+            logger.info(
+                "API call for offset=%s, limit=%s successful, records=%s",
+                offset,
+                limit,
+                len(records),
+            )
+            return (page_token, records, next_token)
+        except Exception as e:
+            logger.warning(
+                "API call for offset=%s, limit=%s failed: %s", offset, limit, e
+            )
+            raise
+
+    def get_records(self, context: Optional[dict]) -> Iterable[dict]:
+        """Fetch in batches: submit all for batch -> wait for all -> consume in order -> next batch."""
+        max_workers = self.config.get("invoice_fetch_parallelism", 15)
+        limit = self.config.get("limit", 50)
+        pages_per_batch = max(1, BATCH_SIZE // limit)
+        start_date = (
+            self.get_starting_timestamp(context)
+            if self.replication_key
+            else None
+        )
+        date_str = (
+            start_date.isoformat() if start_date is not None else "none"
+        )
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            batch_index = 0
+            while True:
+                # STEP 1: tokens for this batch (page indices start_page .. start_page+pages_per_batch)
+                start_page = batch_index * pages_per_batch
+                tokens = [
+                    (None if p == 0 else 1 + p * limit)
+                    for p in range(start_page, start_page + pages_per_batch)
+                ]
+
+                # STEP 2: submit all API calls for current batch, wait for all to complete
+                future_to_token = {
+                    executor.submit(self._fetch_one_page, context, t): t
+                    for t in tokens
+                }
+                results = {}
+                for future in as_completed(future_to_token):
+                    token = future_to_token[future]
+                    try:
+                        _, records, next_token = future.result()
+                    except Exception:
+                        raise
+                    results[token] = (records, next_token)
+
+                # STEP 3: consume response in offset order
+                sorted_tokens = sorted(
+                    results.keys(),
+                    key=lambda t: (t is None, t or 0),
+                )
+                batch_record_count = 0
+                done = False
+                for token in sorted_tokens:
+                    records, next_token = results[token]
+                    for record in records:
+                        yield record
+                        batch_record_count += 1
+                    if next_token is None:
+                        done = True
+                offset_start = 1 if tokens[0] is None else tokens[0]
+                logger.info(
+                    "Process records for offset=%s, limit=%s, updated_at=%s, record_count=%s",
+                    offset_start,
+                    limit,
+                    date_str,
+                    batch_record_count,
+                )
+                if done:
+                    break
+
+                # STEP 4: next batch
+                batch_index += 1
+
 
 class InvoiceScansStream(CoupaStream):
     """Define invoice scans stream that downloads PDFs."""
@@ -521,6 +625,31 @@ class InvoiceScansStream(CoupaStream):
             return ".tiff"
         # fallback
         return ".pdf"
+
+    def _download_single_scan_to_buffer(
+        self, invoice_id: int, image_scan: Optional[str] = None
+    ) -> Optional[Tuple[int, bytes, str]]:
+        """Download a single invoice scan to memory. Returns (invoice_id, content, file_name) or None."""
+        url = f"{self.url_base}invoices/{invoice_id}/retrieve_image_scan"
+        headers = self.http_headers.copy()
+        headers.update(self.authenticator.auth_headers)
+        try:
+            response = self.requests_session.get(
+                url, headers=headers, timeout=self.timeout
+            )
+            if response.status_code == 404 or response.status_code >= 400:
+                return None
+            ext = self._extension_from_image_scan(image_scan)
+            if not ext:
+                content_type = response.headers.get("Content-Type", "")
+                ext = self._extension_from_content_type(content_type)
+            file_name = f"{invoice_id}{ext}"
+            return (invoice_id, response.content, file_name)
+        except Exception as e:
+            logger.warning(
+                "Failed to download scan for invoice %s: %s", invoice_id, e
+            )
+            return None
 
     def _download_single_scan(
         self, invoice_id: int, output_path: Path, image_scan: Optional[str] = None
@@ -595,7 +724,7 @@ class InvoiceScansStream(CoupaStream):
             }
 
     def sync(self, context: Optional[dict] = None) -> None:
-        """Override sync to download PDFs for invoice IDs in bulk context."""
+        """Download scans for this batch into one zip. Zip stays open; each file is written atomically as it completes."""
         if not self.selected and not self.has_selected_descendents:
             return
 
@@ -607,41 +736,63 @@ class InvoiceScansStream(CoupaStream):
         if not invoice_ids:
             return
 
-        # Map invoice_id -> image-scan path from parent (for file extension)
         image_scans = context.get("invoice_image_scans") or []
         id_to_image_scan = dict(image_scans) if image_scans else {}
 
         sync_output_folder = self.get_sync_output_folder()
         output_path = Path(sync_output_folder) / "invoice_scans"
         output_path.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        zip_path = output_path / f"invoice_scans_batch_{timestamp}.zip"
+        write_queue = queue.Queue(maxsize=1)
+        files_written = [0]
 
-        logger.info(f"Downloading {len(invoice_ids)} invoice scans in parallel...")
+        def writer():
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                while True:
+                    item = write_queue.get()
+                    if item is None:
+                        write_queue.task_done()
+                        break
+                    arcname, content = item
+                    zf.writestr(arcname, content)
+                    files_written[0] += 1
+                    write_queue.task_done()
 
-        completed = 0
-        with ThreadPoolExecutor(max_workers=15) as executor:
-            future_to_invoice = {
-                executor.submit(
-                    self._download_single_scan,
-                    invoice_id,
-                    output_path,
-                    id_to_image_scan.get(invoice_id),
-                ): invoice_id
-                for invoice_id in invoice_ids
-            }
-            
-            # Process results as they complete (no record writing - just download PDFs)
-            for future in as_completed(future_to_invoice):
-                invoice_id = future_to_invoice[future]
-                try:
-                    result = future.result()
-                    completed += 1
-                    if completed % 10 == 0:
-                        logger.info(f"Downloaded {completed}/{len(invoice_ids)} invoice scans...")
-                except Exception as e:
-                    logger.error(f"Exception downloading scan for invoice {invoice_id}: {e}")
-                    completed += 1
-        
-        logger.info(f"Completed downloading {completed}/{len(invoice_ids)} invoice scans")
+        writer_thread = threading.Thread(target=writer)
+        writer_thread.start()
+
+        def download_and_put(invoice_id: int) -> None:
+            out = self._download_single_scan_to_buffer(
+                invoice_id, id_to_image_scan.get(invoice_id)
+            )
+            if out is not None:
+                inv_id, content, file_name = out
+                write_queue.put((f"{inv_id}/{file_name}", content))
+
+        logger.info(
+            "Downloading %s invoice scan(s) in parallel for batch zip...",
+            len(invoice_ids),
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=15) as executor:
+                list(executor.map(download_and_put, invoice_ids))
+        except Exception as e:
+            logger.warning("Exception during scan downloads: %s", e)
+        finally:
+            write_queue.put(None)
+            writer_thread.join()
+
+        if files_written[0] == 0:
+            if zip_path.exists():
+                zip_path.unlink()
+            logger.info("No invoice scans in batch, skipping zip.")
+        else:
+            logger.info(
+                "Created invoice_scans zip with %s file(s): %s",
+                files_written[0],
+                zip_path,
+            )
 
     def get_records(self, context: Optional[dict]) -> Iterable[dict]:
         """Not used - downloads are handled in sync() method."""
@@ -675,6 +826,35 @@ class InvoiceAttachmentsStream(CoupaStream):
     def parse_response(self, response: requests.Response) -> Iterable[dict]:
         """Handle binary response - not used for this stream."""
         return []
+
+    def _download_single_attachment_to_buffer(
+        self,
+        invoice_id: int,
+        attachment_id: int,
+        filename: Optional[str] = None,
+    ) -> Optional[Tuple[int, int, bytes, str]]:
+        """Download a single attachment to memory. Returns (invoice_id, attachment_id, content, file_name) or None."""
+        if not filename or not str(filename).strip():
+            return None
+        url = f"{self.url_base}invoices/{invoice_id}/attachments/{attachment_id}"
+        headers = self.http_headers.copy()
+        headers.update(self.authenticator.auth_headers)
+        try:
+            response = self.requests_session.get(
+                url, headers=headers, timeout=self.timeout
+            )
+            if response.status_code == 404 or response.status_code >= 400:
+                return None
+            file_name = filename.strip()
+            return (invoice_id, attachment_id, response.content, file_name)
+        except Exception as e:
+            logger.warning(
+                "Failed to download attachment %s for invoice %s: %s",
+                attachment_id,
+                invoice_id,
+                e,
+            )
+            return None
 
     def _download_single_attachment(
         self,
@@ -772,7 +952,7 @@ class InvoiceAttachmentsStream(CoupaStream):
             }
 
     def sync(self, context: Optional[dict] = None) -> None:
-        """Override sync to download attachment files to invoice_attachments/{invoice_id}/{file_name}."""
+        """Download attachments for this batch into one zip. Zip stays open; each file is written atomically as it completes."""
         if not self.selected and not self.has_selected_descendents:
             return
 
@@ -786,39 +966,62 @@ class InvoiceAttachmentsStream(CoupaStream):
 
         sync_output_folder = self.get_sync_output_folder()
         base_path = Path(sync_output_folder) / "invoice_attachments"
+        base_path.mkdir(parents=True, exist_ok=True)
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        zip_path = base_path / f"invoice_attachments_batch_{timestamp}.zip"
+        write_queue = queue.Queue(maxsize=1)
+        files_written = [0]
 
-        logger.info("Downloading %s invoice attachment(s) in parallel...", len(items))
+        def writer():
+            with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+                while True:
+                    item = write_queue.get()
+                    if item is None:
+                        write_queue.task_done()
+                        break
+                    arcname, content = item
+                    zf.writestr(arcname, content)
+                    files_written[0] += 1
+                    write_queue.task_done()
 
-        completed = 0
-        with ThreadPoolExecutor(max_workers=15) as executor:
-            futures = []
-            for invoice_id, attachment_id, filename in items:
-                output_dir = base_path / str(invoice_id)
-                output_dir.mkdir(parents=True, exist_ok=True)
-                fut = executor.submit(
-                    self._download_single_attachment,
-                    invoice_id,
-                    attachment_id,
-                    output_dir,
-                    filename,
-                )
-                futures.append((fut, invoice_id, attachment_id))
-            for future, invoice_id, attachment_id in futures:
-                try:
-                    future.result()
-                    completed += 1
-                    if completed % 10 == 0:
-                        logger.info("Downloaded %s/%s invoice attachments...", completed, len(items))
-                except Exception as e:
-                    logger.error(
-                        "Exception downloading attachment %s for invoice %s: %s",
-                        attachment_id,
-                        invoice_id,
-                        e,
-                    )
-                    completed += 1
+        writer_thread = threading.Thread(target=writer)
+        writer_thread.start()
 
-        logger.info("Completed downloading %s/%s invoice attachments", completed, len(items))
+        def download_and_put(
+            item: Tuple[int, int, Optional[str]],
+        ) -> None:
+            invoice_id, attachment_id, filename = item
+            out = self._download_single_attachment_to_buffer(
+                invoice_id, attachment_id, filename
+            )
+            if out is not None:
+                inv_id, att_id, content, file_name = out
+                arcname = f"{inv_id}/{att_id}_{file_name}"
+                write_queue.put((arcname, content))
+
+        logger.info(
+            "Downloading %s invoice attachment(s) in parallel for batch zip...",
+            len(items),
+        )
+        try:
+            with ThreadPoolExecutor(max_workers=15) as executor:
+                list(executor.map(download_and_put, items))
+        except Exception as e:
+            logger.warning("Exception during attachment downloads: %s", e)
+        finally:
+            write_queue.put(None)
+            writer_thread.join()
+
+        if files_written[0] == 0:
+            if zip_path.exists():
+                zip_path.unlink()
+            logger.info("No invoice attachments in batch, skipping zip.")
+        else:
+            logger.info(
+                "Created invoice_attachments zip with %s file(s): %s",
+                files_written[0],
+                zip_path,
+            )
 
     def get_records(self, context: Optional[dict]) -> Iterable[dict]:
         """Not used - downloads are handled in sync() method."""
