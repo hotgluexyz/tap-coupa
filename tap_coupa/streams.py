@@ -546,10 +546,12 @@ class InvoicesStream(BulkParentStream):
                         batch_record_count += 1
                     if next_token is None:
                         done = True
-                offset_start = 1 if tokens[0] is None else tokens[0]
+                offset_start = 1 if sorted_tokens[0] is None else sorted_tokens[0]
+                offset_end = sorted_tokens[-1]
                 logger.info(
-                    "Process records for offset=%s, limit=%s, updated_at=%s, record_count=%s",
+                    "Process batch: offset_start=%s, offset_end=%s, limit=%s, updated_at=%s, record_count=%s",
                     offset_start,
+                    offset_end,
                     limit,
                     date_str,
                     batch_record_count,
