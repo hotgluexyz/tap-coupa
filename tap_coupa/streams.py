@@ -532,10 +532,10 @@ class InvoicesStream(BulkParentStream):
                         raise
                     results[token] = (records, next_token)
 
-                # STEP 3: consume response in offset order
+                # STEP 3: consume response in offset order (None = first page, then 51, 101, ...)
                 sorted_tokens = sorted(
                     results.keys(),
-                    key=lambda t: (t is None, t or 0),
+                    key=lambda t: (t is not None, t or 0),
                 )
                 batch_record_count = 0
                 done = False
@@ -547,7 +547,11 @@ class InvoicesStream(BulkParentStream):
                     if next_token is None:
                         done = True
                 offset_start = 1 if sorted_tokens[0] is None else sorted_tokens[0]
-                offset_end = sorted_tokens[-1]
+                offset_end = (
+                    sorted_tokens[-1]
+                    if sorted_tokens[-1] is not None
+                    else 1
+                )
                 logger.info(
                     "Process batch: offset_start=%s, offset_end=%s, limit=%s, updated_at=%s, record_count=%s",
                     offset_start,
