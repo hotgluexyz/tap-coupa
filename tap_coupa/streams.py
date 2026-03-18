@@ -463,42 +463,44 @@ class InvoicesStream(BulkParentStream):
     def _fetch_one_page(
         self, context: Optional[dict], page_token: Optional[Any]
     ) -> Tuple[Optional[Any], list, Optional[Any]]:
-        """Fetch one page of invoices. Returns (page_token_used, records, next_page_token)."""
-        url = f"{self.url_base}{self.path}"
+        """Fetch one page using SDK path: prepare_request (auth) -> _request -> update_sync_costs. Retries get fresh token."""
+
+        def do_fetch():
+            prepared_request = self.prepare_request(
+                context, next_page_token=page_token
+            )
+            resp = self._request(prepared_request, context)
+            records = list(self.parse_response(resp))
+            next_token = self.get_next_page_token(resp, page_token)
+            return (resp, records, next_token)
+
+        response, records, next_token = self.request_decorator(do_fetch)()
         params = self.get_url_params(context, page_token)
-        headers = self.http_headers.copy()
-        headers.update(self.authenticator.auth_headers)
-
-        def do_request():
-            return self.requests_session.get(
-                url, params=params, headers=headers, timeout=self.timeout
-            )
-
-        response = self.request_decorator(do_request)()
-        offset = params.get("offset", "")
-        limit = params.get("limit", "")
-        try:
-            self.validate_response(response)
-            records = list(self.parse_response(response))
-            next_token = self.get_next_page_token(response, page_token)
-            logger.info(
-                "API call for offset=%s, limit=%s successful, records=%s",
-                offset,
-                limit,
-                len(records),
-            )
-            return (page_token, records, next_token)
-        except Exception as e:
-            logger.warning(
-                "API call for offset=%s, limit=%s failed: %s", offset, limit, e
-            )
-            raise
+        logger.info(
+            "API call for offset=%s, limit=%s successful, records=%s",
+            params.get("offset", ""),
+            params.get("limit", ""),
+            len(records),
+        )
+        return (page_token, records, next_token)
 
     def get_records(self, context: Optional[dict]) -> Iterable[dict]:
         """Fetch in batches: submit all for batch -> wait for all -> consume in order -> next batch."""
         max_workers = self.config.get("invoice_fetch_parallelism", 15)
         limit = self.config.get("limit", 50)
         pages_per_batch = max(1, BATCH_SIZE // limit)
+        resume_from_offset = self.config.get("resume_from_offset")
+        if resume_from_offset is not None and resume_from_offset > 0:
+            page_index = (resume_from_offset - 1) // limit
+            batch_index = page_index // pages_per_batch
+            logger.info(
+                "Resuming from offset=%s (batch_index=%s, page_index=%s)",
+                resume_from_offset,
+                batch_index,
+                page_index,
+            )
+        else:
+            batch_index = 0
         start_date = (
             self.get_starting_timestamp(context)
             if self.replication_key
@@ -509,7 +511,6 @@ class InvoicesStream(BulkParentStream):
         )
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            batch_index = 0
             while True:
                 # STEP 1: tokens for this batch (page indices start_page .. start_page+pages_per_batch)
                 start_page = batch_index * pages_per_batch

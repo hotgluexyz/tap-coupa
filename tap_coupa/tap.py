@@ -27,6 +27,11 @@ class TapCoupa(Tap):
         th.Property("scope", th.StringType, default="core.common.read core.invoice.read"),
         th.Property("start_date", th.DateTimeType, default="2000-01-01T00:00:00.000Z"),
         th.Property("limit", th.IntegerType, default=50),
+        th.Property(
+            "resume_from_offset",
+            th.IntegerType,
+            description="Optional. Start invoice fetch from this API offset (e.g. 5001) instead of from the beginning.",
+        ),
     ).to_dict()
 
     def discover_streams(self) -> List[Stream]:

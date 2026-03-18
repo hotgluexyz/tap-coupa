@@ -233,11 +233,12 @@ class CoupaStream(RESTStream):
                 raise RetriableAPIError(f"Invalid JSON: {body}")
 
     def request_decorator(self, func: Callable) -> Callable:
-        """Instantiate a decorator for handling request failures."""
+        """Instantiate a decorator for handling request failures (including 503, connection errors)."""
         decorator: Callable = backoff.on_exception(
             backoff.expo,
             (
                 RetriableAPIError,
+                RetriableInvalidCredentialsError,
                 requests.exceptions.ReadTimeout,
                 requests.exceptions.ConnectionError,
                 ProtocolError,
