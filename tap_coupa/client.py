@@ -20,6 +20,9 @@ from requests.exceptions import ChunkedEncodingError
 
 logging.getLogger("backoff").setLevel(logging.CRITICAL)
 
+# Batch size for invoice record yielding and for child context (attachments, scans).
+BATCH_SIZE = 1000
+
 
 class RetriableInvalidCredentialsError(RetriableAPIError, InvalidCredentialsError):
     pass
@@ -269,7 +272,7 @@ class BulkParentStream(CoupaStream):
     @property
     def child_context_size(self):
         """Size of batch before syncing children."""
-        return self.config.get("child_context_size", 250)
+        return self.config.get("child_context_size", BATCH_SIZE)
 
     def _sync_records(self, context: Optional[dict] = None) -> None:
         """Override _sync_records to batch child contexts."""
