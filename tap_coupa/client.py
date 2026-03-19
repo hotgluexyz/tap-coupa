@@ -1,9 +1,8 @@
 """REST client handling, including CoupaStream base class."""
 
-import copy
 import logging
 import time
-from typing import Any, Dict, Iterable, Optional, Callable, List
+from typing import Any, Dict, Iterable, Optional, Callable
 
 import backoff
 import requests
@@ -11,7 +10,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from urllib3.exceptions import ProtocolError
 from hotglue_singer_sdk.helpers.jsonpath import extract_jsonpath
-from hotglue_singer_sdk.helpers._state import finalize_state_progress_markers
 from hotglue_singer_sdk.streams import RESTStream
 from hotglue_singer_sdk.exceptions import RetriableAPIError
 from hotglue_singer_sdk.tap_base import InvalidCredentialsError
@@ -20,7 +18,7 @@ from requests.exceptions import ChunkedEncodingError
 
 logging.getLogger("backoff").setLevel(logging.CRITICAL)
 
-# Batch size for invoice record yielding and for child context (attachments, scans).
+# Batch size for parallel invoice page fetches (and zip batch granularity).
 BATCH_SIZE = 1000
 
 
@@ -263,91 +261,3 @@ class CoupaStream(RESTStream):
             "calling function {target} with args {args} and kwargs "
             "{kwargs}".format(**details)
         )
-
-
-class BulkParentStream(CoupaStream):
-    """Parent stream that batches child contexts before syncing children."""
-
-    child_context_keys = ["invoice_ids", "invoice_image_scans", "invoice_attachments"]
-
-    @property
-    def child_context_size(self):
-        """Size of batch before syncing children."""
-        return self.config.get("child_context_size", BATCH_SIZE)
-
-    def _sync_records(self, context: Optional[dict] = None) -> None:
-        """Override _sync_records to batch child contexts."""
-        record_count = 0
-        current_context: Optional[dict]
-        context_list: Optional[List[dict]]
-        context_list = [context] if context is not None else self.partitions
-        selected = self.selected
-
-        for current_context in context_list or [{}]:
-            partition_record_count = 0
-            current_context = current_context or None
-            state = self.get_context_state(current_context)
-            state_partition_context = self._get_state_partition_context(current_context)
-            self._write_starting_replication_value(current_context)
-            child_context: Optional[dict] = (
-                None if current_context is None else copy.copy(current_context)
-            )
-            child_context_bulk = {key: [] for key in self.child_context_keys}
-            
-            for record_result in self.get_records(current_context):
-                if isinstance(record_result, tuple):
-                    # Tuple items should be the record and the child context
-                    record, child_context = record_result
-                else:
-                    record = record_result
-                
-                child_context = copy.copy(
-                    self.get_child_context(record=record, context=child_context)
-                )
-                
-                for key, val in (state_partition_context or {}).items():
-                    # Add state context to records if not already present
-                    if key not in record:
-                        record[key] = val
-
-                # Sync children, except when primary mapper filters out the record
-                if self.stream_maps[0].get_filter_result(record):
-                    # add id to child_context_bulk invoice_ids
-                    if child_context:
-                        for key, value in child_context.items():
-                            if value:  # Only extend if value is truthy
-                                child_context_bulk[key].extend(value)
-                
-                if any(len(v) >= self.child_context_size for v in child_context_bulk.values()):
-                    self._sync_children(child_context_bulk)
-                    child_context_bulk = {key: [] for key in self.child_context_keys}
-
-                self._check_max_record_limit(record_count)
-                if selected:
-                    if (record_count - 1) % self.STATE_MSG_FREQUENCY == 0:
-                        self._write_state_message()
-                    self._write_record_message(record)
-                    try:
-                        self._increment_stream_state(record, context=current_context)
-                    except Exception as ex:
-                        logging.error(f"Error incrementing stream state: {ex}")
-                        raise ex
-
-                record_count += 1
-                partition_record_count += 1
-            
-            # process remaining child context
-            if any(v != [] for v in child_context_bulk.values()):
-                self._sync_children(child_context_bulk)
-            
-            if current_context == state_partition_context:
-                # Finalize per-partition state only if 1:1 with context
-                finalize_state_progress_markers(state)
-        
-        if not context:
-            # Finalize total stream only if we have the full context
-            finalize_state_progress_markers(self.stream_state)
-        
-        self._write_record_count_log(record_count=record_count, context=context)
-        # Reset interim bookmarks before emitting final STATE message:
-        self._write_state_message()

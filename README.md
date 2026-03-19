@@ -44,7 +44,12 @@ The tap requires the following configuration:
 
 ### invoices
 
-Fetches invoice data from the Coupa API with incremental replication using the `updated-at` field.
+Fetches invoice data from the Coupa API with incremental replication using the `updated-at` field. After each parallel page batch, the tap downloads invoice image scans and attachments, writes batch zips under the sync output folder, and adds two fields to every emitted invoice record:
+
+- `invoice_scan_zip` — basename of the scan batch zip for that batch (e.g. `invoice_scans_batch_20260318_005729.zip`), or empty string if none was written
+- `invoice_attachment_zip` — basename of the attachments batch zip, or empty string if none was written
+
+Rows filtered out by the stream mapper still appear in the stream but get empty strings for both fields and do not trigger downloads.
 
 **Replication Method**: Incremental (uses `updated-at` as replication key)
 
@@ -55,19 +60,12 @@ Fetches invoice data from the Coupa API with incremental replication using the `
 - `offset`: Pagination offset
 - `updated_at[gt]`: Filter for invoices updated after this date
 
-### invoice_scans
+**Zip output** (same layout as before):
 
-Child stream that downloads PDF invoice scans for each invoice.
+- Scans: `sync-output/invoice_scans/invoice_scans_batch_<utc>.zip` (members `/{invoice_id}/{invoice_id}.<ext>`)
+- Attachments: `sync-output/invoice_attachments/invoice_attachments_batch_<utc>.zip`
 
-**Replication Method**: Full table (depends on parent invoices stream)
-
-**API Endpoint**: `GET /api/invoices/{invoice_id}/retrieve_image_scan`
-
-**Output**: PDF files are saved to the sync output folder:
-- If `JOB_ID` environment variable is set: `/home/hotglue/{job_id}/sync-output/invoice_scans/`
-- Otherwise: `./invoice_scans/`
-
-Files are named: `{invoiceId}.pdf` (e.g., `5655534.pdf`)
+If `JOB_ID` is set, sync output defaults to `/home/hotglue/{JOB_ID}/sync-output/`; otherwise `./`.
 
 ## Usage
 
