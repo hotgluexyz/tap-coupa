@@ -46,8 +46,8 @@ The tap requires the following configuration:
 
 Fetches invoice data from the Coupa API with incremental replication using the `updated-at` field. After each parallel page batch, the tap downloads invoice image scans and attachments, writes batch zips under the sync output folder, and adds two fields to every emitted invoice record:
 
-- `invoice_scan_zip` — basename of the scan batch zip for that batch (e.g. `invoice_scans_batch_20260318_005729.zip`), or empty string if none was written
-- `invoice_attachment_zip` — basename of the attachments batch zip, or empty string if none was written
+- `invoice_scan_zip` — basename of the **batch** scan zip if this invoice had at least one scan file written into that zip for the current page batch; otherwise empty string (other invoices in the same batch may still point at the same zip file).
+- `invoice_attachment_zip` — basename of the **batch** attachment zip if this invoice had at least one attachment file written into that zip for the batch; otherwise empty string.
 
 Rows filtered out by the stream mapper still appear in the stream but get empty strings for both fields and do not trigger downloads.
 

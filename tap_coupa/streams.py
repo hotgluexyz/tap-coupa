@@ -6,7 +6,7 @@ import queue
 import threading
 import zipfile
 from datetime import datetime
-from typing import Any, Optional, Iterable, Tuple
+from typing import Any, Optional, Iterable, Set, Tuple
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -565,8 +565,11 @@ class InvoicesStream(CoupaStream):
 
     def _run_scans_zip(
         self, invoice_ids: list, id_to_image_scan: dict,
-    ) -> str:
-        """Download scans in parallel into one batch zip; return basename or ""."""
+    ) -> Tuple[str, Set[int]]:
+        """Download scans in parallel into one batch zip.
+
+        Returns (zip basename or "", set of invoice ids that had at least one scan written).
+        """
         sync_output_folder = self.get_sync_output_folder()
         output_path = Path(sync_output_folder) / "invoice_scans"
         output_path.mkdir(parents=True, exist_ok=True)
@@ -574,6 +577,8 @@ class InvoicesStream(CoupaStream):
         zip_path = output_path / f"invoice_scans_batch_{timestamp}.zip"
         write_queue: queue.Queue = queue.Queue(maxsize=1)
         files_written = [0]
+        invoice_ids_with_scan: Set[int] = set()
+        scan_id_lock = threading.Lock()
 
         def writer():
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -597,6 +602,8 @@ class InvoicesStream(CoupaStream):
             if out is not None:
                 inv_id, content, file_name = out
                 write_queue.put((f"{inv_id}/{file_name}", content))
+                with scan_id_lock:
+                    invoice_ids_with_scan.add(inv_id)
 
         dl_workers = self.config.get("invoice_download_parallelism", 15)
         logger.info(
@@ -616,16 +623,19 @@ class InvoicesStream(CoupaStream):
             if zip_path.exists():
                 zip_path.unlink()
             logger.info("No invoice scans in batch, skipping zip.")
-            return ""
+            return "", set()
         logger.info(
             "Created invoice_scans zip with %s file(s): %s",
             files_written[0],
             zip_path,
         )
-        return zip_path.name
+        return zip_path.name, invoice_ids_with_scan
 
-    def _run_attachments_zip(self, items: list) -> str:
-        """Download attachments in parallel into one batch zip; return basename or ""."""
+    def _run_attachments_zip(self, items: list) -> Tuple[str, Set[int]]:
+        """Download attachments in parallel into one batch zip.
+
+        Returns (zip basename or "", set of invoice ids that had at least one attachment written).
+        """
         sync_output_folder = self.get_sync_output_folder()
         base_path = Path(sync_output_folder) / "invoice_attachments"
         base_path.mkdir(parents=True, exist_ok=True)
@@ -633,6 +643,8 @@ class InvoicesStream(CoupaStream):
         zip_path = base_path / f"invoice_attachments_batch_{timestamp}.zip"
         write_queue: queue.Queue = queue.Queue(maxsize=1)
         files_written = [0]
+        invoice_ids_with_attachment: Set[int] = set()
+        att_id_lock = threading.Lock()
 
         def writer():
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -659,6 +671,8 @@ class InvoicesStream(CoupaStream):
             if out is not None:
                 inv_id, att_id, content, file_name = out
                 write_queue.put((f"{inv_id}/{att_id}_{file_name}", content))
+                with att_id_lock:
+                    invoice_ids_with_attachment.add(inv_id)
 
         dl_workers = self.config.get("invoice_download_parallelism", 15)
         logger.info(
@@ -678,30 +692,41 @@ class InvoicesStream(CoupaStream):
             if zip_path.exists():
                 zip_path.unlink()
             logger.info("No invoice attachments in batch, skipping zip.")
-            return ""
+            return "", set()
         logger.info(
             "Created invoice_attachments zip with %s file(s): %s",
             files_written[0],
             zip_path,
         )
-        return zip_path.name
+        return zip_path.name, invoice_ids_with_attachment
 
     def _annotate_batch_zip_fields(self, batch_records: list) -> None:
-        """Set invoice_scan_zip / invoice_attachment_zip before records are emitted (get_records STEP 4)."""
+        """Set invoice_scan_zip / invoice_attachment_zip before records are emitted (get_records STEP 4).
+
+        Only invoices with at least one successful scan (resp. attachment) byte in the batch
+        zip get the corresponding basename; others get "".
+        """
         invoice_ids, id_to_image_scan, att_items = self._batch_download_lists(
             batch_records
         )
-        # STEP 4a: all invoice scans for this batch (ThreadPool inside _run_scans_zip)
-        scan_zip = self._run_scans_zip(invoice_ids, id_to_image_scan) if invoice_ids else ""
-        # STEP 4b: all invoice attachments for this batch (ThreadPool inside _run_attachments_zip)
-        att_zip = self._run_attachments_zip(att_items) if att_items else ""
+        # STEP 4a: batch scan zip + which invoice ids had a scan file written
+        scan_zip, scan_ok_ids = (
+            self._run_scans_zip(invoice_ids, id_to_image_scan)
+            if invoice_ids
+            else ("", set())
+        )
+        # STEP 4b: batch attachment zip + which invoice ids had ≥1 attachment file written
+        att_zip, att_ok_ids = (
+            self._run_attachments_zip(att_items) if att_items else ("", set())
+        )
         for record in batch_records:
-            if self.stream_maps[0].get_filter_result(record):
-                record["invoice_scan_zip"] = scan_zip
-                record["invoice_attachment_zip"] = att_zip
-            else:
+            if not self.stream_maps[0].get_filter_result(record):
                 record["invoice_scan_zip"] = ""
                 record["invoice_attachment_zip"] = ""
+                continue
+            iid = record["id"]
+            record["invoice_scan_zip"] = scan_zip if iid in scan_ok_ids else ""
+            record["invoice_attachment_zip"] = att_zip if iid in att_ok_ids else ""
 
     def _fetch_one_page(
         self, context: Optional[dict], page_token: Optional[Any]
