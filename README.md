@@ -59,6 +59,7 @@ Rows filtered out by the stream mapper still appear in the stream but get empty 
 - `limit`: Number of records per page (default: 50)
 - `offset`: Pagination offset
 - `updated_at[gt]`: Filter for invoices updated after this date
+- Optional filters from **`--selected-filters`** (see [Selected filters](#selected-filters) under Usage), e.g. `supplier[id][in]=...` or field equality
 
 **Zip output** (same layout as before):
 
@@ -89,6 +90,44 @@ Sync specific streams:
 
 ```bash
 tap-coupa --config config.json --catalog catalog.json
+```
+
+### Selected filters
+
+The tap supports the Hotglue CLI flag **`--selected-filters`**, pointing at a JSON file that restricts what the Coupa API returns for each stream. For the **invoices** stream, the file is parsed into Coupa query parameters (for example `supplier[name][in]=a,b` or equality on a field).
+
+**File shape** (top level):
+
+- `filters_version` - optional string for your own bookkeeping.
+- `streams` - map of stream name to filter object. Only the **lowest-numbered** `clause_*` entry per stream is used; extra clauses are ignored.
+
+Each **clause** supports operators **`IN`** (list of values, sent as a comma-separated query value) and **`EQ`** (single value). See `tap_coupa/selected_filters.py` for exact behavior.
+
+**Example** `selected-filters.json` - filter invoices to a set of supplier IDs:
+
+```json
+{
+  "filters_version": "1.0.0",
+  "streams": {
+    "invoices": {
+      "clause_1": {
+        "field": "supplier[id]",
+        "operator": "IN",
+        "value": ["619", "620", "621"]
+      }
+    }
+  }
+}
+```
+
+**Example** - run a sync with catalog, state, and selected filters:
+
+```bash
+tap-coupa \
+  --config config.json \
+  --catalog catalog.json \
+  --state state.json \
+  --selected-filters selected-filters.json
 ```
 
 ### State
