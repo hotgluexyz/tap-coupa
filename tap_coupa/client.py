@@ -15,6 +15,7 @@ from hotglue_singer_sdk.exceptions import RetriableAPIError
 from hotglue_singer_sdk.tap_base import InvalidCredentialsError
 from http.client import RemoteDisconnected
 from requests.exceptions import ChunkedEncodingError
+from tap_coupa.selected_filters import parse_coupa_selected_filters
 
 logging.getLogger("backoff").setLevel(logging.CRITICAL)
 
@@ -109,6 +110,27 @@ class CoupaStream(RESTStream):
         self.requests_session.mount('https://', adapter)
         self.requests_session.mount('http://', adapter)
 
+    def setup_selected_filters(self) -> None:
+        """Parse selected-filters for this stream into ``_custom_filters`` (query param dict).
+
+        Delegates to :func:`tap_coupa.selected_filters.parse_coupa_selected_filters`. On
+        invalid clauses, wraps :class:`ValueError` with the stream name. An empty or
+        non-applicable filter results in ``_custom_filters == {}`` (no extra query params).
+        """
+        if not self._selected_filters:
+            return
+        try:
+            self._custom_filters = parse_coupa_selected_filters(self._selected_filters)
+        except ValueError as e:
+            raise ValueError(
+                f"Invalid selected filters for stream '{self.name}': {e}"
+            ) from e
+        self.logger.info(
+            "Coupa selected filter query params for stream '%s': %s",
+            self.name,
+            self._custom_filters,
+        )
+
     @property
     def url_base(self) -> str:
         """Return the API URL root, configurable via tap settings."""
@@ -130,7 +152,11 @@ class CoupaStream(RESTStream):
     def get_url_params(
         self, context: Optional[dict], next_page_token: Optional[Any]
     ) -> Dict[str, Any]:
-        """Return a dictionary of values to be used in URL parameterization."""
+        """Return query parameters for the request: limit, offset, optional incremental filter.
+
+        When ``_custom_filters`` is set (from selected-filters), merges those key-value pairs
+        into the params (e.g. ``supplier[id][in]=...`` or equality on a field).
+        """
         params: dict = {}
         params["limit"] = self.config.get("limit", 50)
         
@@ -148,11 +174,18 @@ class CoupaStream(RESTStream):
                 replication_key_value = start_date.isoformat()
                 params["updated_at[gt]"] = replication_key_value
 
+        custom_filters = getattr(self, "_custom_filters", None)
+        if custom_filters:
+            params.update(custom_filters)
+
         # Log endpoint, offset, limit, and replication key value
         endpoint = f"{self.url_base}{self.path}"
         log_msg = f"Calling endpoint: {endpoint} with offset={params.get('offset')}, limit={params.get('limit')}"
         if replication_key_value:
             log_msg += f", {self.replication_key}={replication_key_value}"
+            
+        if custom_filters:
+            log_msg += f", custom filters: {custom_filters}"
         self.logger.info(log_msg)
 
         return params
