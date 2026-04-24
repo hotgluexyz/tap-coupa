@@ -1,14 +1,7 @@
 """Map Hotglue ``selected-filters.json`` stream entries to Coupa Core API query parameters.
 
-Only the **lowest-numbered** ``clause_*`` key is used (e.g. ``clause_1`` before ``clause_2``);
-additional clauses are ignored. Keys other than ``clause_*`` are ignored.
-
-Supported operators per clause: ``EQ`` (equality) and ``IN`` (comma-separated list in the
-query value, via ``field[in]=a,b,c``). A non-list ``IN`` value is converted with ``str(value)``.
-
-If there are no ``clause_*`` entries, or the chosen clause has an empty ``IN`` list, logs a
-warning and returns an empty dict. Malformed clauses or unsupported operators raise
-``ValueError``.
+``clause_1``, ``clause_2``, … are applied in order and merged into one query param dict.
+``EQ`` → ``field=value``; ``IN`` → ``field[in]=a,b,c``. Other keys (e.g. ``operator_*``) are ignored.
 """
 
 from __future__ import annotations
@@ -61,25 +54,11 @@ def _clause_to_params(clause: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def parse_coupa_selected_filters(stream_filters: Dict[str, Any]) -> Dict[str, Any]:
-    """Build Coupa GET query parameters from one stream's selected-filters object.
-
-    Uses the first clause after ordering by ``clause_N`` suffix. Returns ``{}`` (and logs)
-    when there is no clause or the clause yields no params (e.g. empty ``IN`` list).
-
-    Raises:
-        ValueError: Invalid clause shape, empty field, or operator other than ``EQ`` / ``IN``.
-    """
+    """Build Coupa GET query parameters from one stream's selected-filters object."""
     clauses = _ordered_clauses(stream_filters)
     if not clauses:
-        _LOG.warning(
-            "No clause_* entries found in selected filters."
-        )
         return {}
-    
-    params = _clause_to_params(clauses[0])
-    if not params:
-        _LOG.warning(
-            "Selected filter clause produced no query parameters (empty IN list?)."
-        )
-        return {}
-    return params
+    merged: Dict[str, Any] = {}
+    for clause in clauses:
+        merged.update(_clause_to_params(clause))
+    return merged

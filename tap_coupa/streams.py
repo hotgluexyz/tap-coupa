@@ -430,7 +430,7 @@ class InvoicesStream(CoupaStream):
 
     def get_available_filters_metadata(self) -> Dict[str, Any]:
         return {
-            "supported_operators": ["IN", "EQ"],
+            "supported_operators": ["AND"],
             "supports_nesting_clauses": False,
             "filters": {
                 "status": {
