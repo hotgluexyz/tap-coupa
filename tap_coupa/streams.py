@@ -6,7 +6,7 @@ import queue
 import threading
 import zipfile
 from datetime import datetime
-from typing import Any, Optional, Iterable, Set, Tuple
+from typing import Any, Dict, Optional, Iterable, Set, Tuple
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -15,7 +15,6 @@ from hotglue_singer_sdk import typing as th  # JSON Schema typing helpers
 from tap_coupa.client import BATCH_SIZE, CoupaStream
 
 logger = logging.getLogger(__name__)
-
 
 class InvoicesStream(CoupaStream):
     """Define invoices stream."""
@@ -428,6 +427,47 @@ class InvoicesStream(CoupaStream):
         th.Property("invoice_scan_zip", th.StringType),
         th.Property("invoice_attachment_zip", th.StringType),
     ).to_dict()
+
+    def get_available_filters_metadata(self) -> Dict[str, Any]:
+        return {
+            "supported_operators": ["IN", "EQ"],
+            "supports_nesting_clauses": False,
+            "filters": {
+                "status": {
+                    "label": "Invoice status",
+                    "supported_operators": ["IN", "EQ"],
+                    "target_field": "status",
+                    "options": [
+                        "abandoned",
+                        "ap_hold",
+                        "approved",
+                        "booking_hold",
+                        "disputed",
+                        "draft",
+                        "invalid",
+                        "new",
+                        "on_hold",
+                        "payable_adjustment",
+                        "pending_action",
+                        "pending_approval",
+                        "pending_receipt",
+                        "processing",
+                        "rejected",
+                        "voided",
+                    ],
+                },
+                "supplier_id": {
+                    "label": "Supplier ID",
+                    "supported_operators": ["IN", "EQ"],
+                    "target_field": "supplier[id]",
+                },
+                "supplier_name": {
+                    "label": "Supplier name",
+                    "supported_operators": ["IN", "EQ"],
+                    "target_field": "supplier[name]",
+                },
+            },
+        }
 
     @staticmethod
     def _filename_from_attachment(att: dict) -> Optional[str]:
