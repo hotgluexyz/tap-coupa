@@ -99,7 +99,7 @@ The tap supports the Hotglue CLI flag **`--selected-filters`**, pointing at a JS
 **File shape** (top level):
 
 - `filters_version` - optional string for your own bookkeeping.
-- `streams` - map of stream name to filter object. Only the **lowest-numbered** `clause_*` entry per stream is used; extra clauses are ignored.
+- `streams` - map of stream name to filter object. All `clause_*` entries are merged into the request in order.
 
 Each **clause** supports operators **`IN`** (list of values, sent as a comma-separated query value) and **`EQ`** (single value). See `tap_coupa/selected_filters.py` for exact behavior.
 

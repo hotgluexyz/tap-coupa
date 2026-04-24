@@ -6,7 +6,7 @@ import queue
 import threading
 import zipfile
 from datetime import datetime
-from typing import Any, Optional, Iterable, Set, Tuple
+from typing import Any, Dict, Optional, Iterable, Set, Tuple
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -15,7 +15,6 @@ from hotglue_singer_sdk import typing as th  # JSON Schema typing helpers
 from tap_coupa.client import BATCH_SIZE, CoupaStream
 
 logger = logging.getLogger(__name__)
-
 
 class InvoicesStream(CoupaStream):
     """Define invoices stream."""
@@ -31,14 +30,14 @@ class InvoicesStream(CoupaStream):
         th.Property("created-at", th.DateTimeType),
         th.Property("updated-at", th.DateTimeType),
         th.Property("compliant", th.BooleanType),
-        th.Property("handling-amount", th.StringType),
+        th.Property("handling-amount", th.NumberType),
         th.Property("internal-note", th.StringType),
         th.Property("invoice-date", th.DateTimeType),
         th.Property("delivery-date", th.DateTimeType),
         th.Property("invoice-number", th.StringType),
         th.Property("line-level-taxation", th.BooleanType),
-        th.Property("misc-amount", th.StringType),
-        th.Property("shipping-amount", th.StringType),
+        th.Property("misc-amount", th.NumberType),
+        th.Property("shipping-amount", th.NumberType),
         th.Property("status", th.StringType),
         th.Property("supplier-total", th.StringType),
         th.Property("supplier-note", th.StringType),
@@ -90,7 +89,7 @@ class InvoicesStream(CoupaStream):
         th.Property("customer-account-number", th.StringType),
         th.Property("total-with-taxes", th.StringType),
         th.Property("gross-total", th.StringType),
-        th.Property("tax-rate", th.StringType),
+        th.Property("tax-rate", th.NumberType),
         th.Property("tax-amount", th.StringType),
         th.Property("exported", th.BooleanType),
         th.Property("supplier-created", th.BooleanType),
@@ -310,7 +309,7 @@ class InvoicesStream(CoupaStream):
                     ),
                     th.Property("item", th.StringType),
                     th.Property("tax-code", th.StringType),
-                    th.Property("uom", th.StringType),
+                    th.Property("uom", th.CustomType({"type": ["object", "string"]})),
                     th.Property("weight-uom", th.StringType),
                     th.Property("order-line-commodity", th.StringType),
                     th.Property("period", th.StringType),
@@ -393,7 +392,7 @@ class InvoicesStream(CoupaStream):
                     th.Property("approvable-id", th.IntegerType),
                     th.Property("parallel-group-name", th.StringType),
                     th.Property("delegate-id", th.IntegerType),
-                    th.Property("approved-by", th.StringType),
+                    th.Property("approved-by", th.CustomType({"type": ["object", "string"]})),
                     th.Property("delegates", th.ArrayType(th.CustomType({"type": ["object", "string"]}))),
                 )
             ),
@@ -406,7 +405,7 @@ class InvoicesStream(CoupaStream):
                     th.Property("created-at", th.DateTimeType),
                     th.Property("updated-at", th.DateTimeType),
                     th.Property("amount", th.StringType),
-                    th.Property("rate", th.StringType),
+                    th.Property("rate", th.NumberType),
                     th.Property("code", th.StringType),
                     th.Property("description", th.StringType),
                     th.Property("taxable-amount", th.StringType),
@@ -428,6 +427,47 @@ class InvoicesStream(CoupaStream):
         th.Property("invoice_scan_zip", th.StringType),
         th.Property("invoice_attachment_zip", th.StringType),
     ).to_dict()
+
+    def get_available_filters_metadata(self) -> Dict[str, Any]:
+        return {
+            "supported_operators": ["AND"],
+            "supports_nesting_clauses": False,
+            "filters": {
+                "status": {
+                    "label": "Invoice status",
+                    "supported_operators": ["IN", "EQ"],
+                    "target_field": "status",
+                    "options": [
+                        "abandoned",
+                        "ap_hold",
+                        "approved",
+                        "booking_hold",
+                        "disputed",
+                        "draft",
+                        "invalid",
+                        "new",
+                        "on_hold",
+                        "payable_adjustment",
+                        "pending_action",
+                        "pending_approval",
+                        "pending_receipt",
+                        "processing",
+                        "rejected",
+                        "voided",
+                    ],
+                },
+                "supplier_id": {
+                    "label": "Supplier ID",
+                    "supported_operators": ["IN", "EQ"],
+                    "target_field": "supplier[id]",
+                },
+                "supplier_name": {
+                    "label": "Supplier name",
+                    "supported_operators": ["IN", "EQ"],
+                    "target_field": "supplier[name]",
+                },
+            },
+        }
 
     @staticmethod
     def _filename_from_attachment(att: dict) -> Optional[str]:
