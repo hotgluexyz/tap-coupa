@@ -1407,7 +1407,7 @@ class SuppliersStream(CoupaStream):
         th.Property("type", th.StringType),
         th.Property("duns", th.StringType),
         th.Property("tax-id", th.StringType),
-        th.Property("tax-code", th.StringType),
+        th.Property("tax-code", _flex_object),
         th.Property("account-number", th.StringType),
         th.Property("business-entity-id", th.IntegerType),
         th.Property("corporate-url", th.StringType),
