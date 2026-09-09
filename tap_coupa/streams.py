@@ -1442,7 +1442,7 @@ class SuppliersStream(CoupaStream):
                 ),
                 th.Property(
                     "updated-by",
-                    th.CustomType({"type": ["object", "string", "null"]}),
+                    th.CustomType({"type": ["object", "string"]}),
                 ),
             ),
         ),
@@ -1553,11 +1553,11 @@ class SuppliersStream(CoupaStream):
         th.Property("updated-at", th.DateTimeType),
         th.Property(
             "created-by",
-            th.CustomType({"type": ["object", "string", "null"]}),
+            th.CustomType({"type": ["object", "string"]}),
         ),
         th.Property(
             "updated-by",
-            th.CustomType({"type": ["object", "string", "null"]}),
+            th.CustomType({"type": ["object", "string"]}),
         ),
-        th.Property("custom-fields", th.CustomType({"type": ["object", "string", "null"]})),
+        th.Property("custom-fields", th.CustomType({"type": ["object", "string"]})),
     ).to_dict()
