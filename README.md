@@ -82,7 +82,7 @@ Fetches supplier (vendor) records from the Coupa API with incremental replicatio
 - `updated_at[gt]`: Filter for suppliers updated after this date
 - Optional filters from **`--selected-filters`**, e.g. `status=active` or `number[in]=...`
 
-**OAuth scope**: `core.suppliers.read`
+**OAuth scope**: `core.supplier.read` (add to your OIDC client and `scope` config)
 
 ## Usage
 

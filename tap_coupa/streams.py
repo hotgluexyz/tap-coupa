@@ -1376,36 +1376,69 @@ class InvoiceAttachmentsStream(CoupaStream):
 
 
 class SuppliersStream(CoupaStream):
-    """Define suppliers stream."""
+    """Define suppliers stream.
+
+    Schema aligned with Coupa Suppliers API reference:
+    https://docs.coupa.com/en/developer-documentation/the-coupa-core-api/resources/reference-data-resources/suppliers-api-suppliers
+    """
 
     name = "suppliers"
     path = "suppliers"
     primary_keys = ["id"]
     replication_key = "updated-at"
 
+    # Coupa returns mixed shapes for several documented fields (string vs object,
+    # string vs array). Use flexible JSON Schema types to avoid target validation
+    # failures while keeping scalar fields strict where the API is consistent.
+    _flex_object = th.CustomType({"type": ["object", "string"]})
+    _flex_array = th.ArrayType(th.CustomType({"type": ["object", "string"]}))
+    _flex_string_or_array = th.CustomType({"type": ["string", "array"]})
+
     schema = th.PropertiesList(
         th.Property("id", th.IntegerType),
+        th.Property("created-at", th.DateTimeType),
+        th.Property("updated-at", th.DateTimeType),
         th.Property("name", th.StringType),
         th.Property("number", th.StringType),
         th.Property("display-name", th.StringType),
         th.Property("status", th.StringType),
         th.Property("supplier-status", th.StringType),
+        th.Property("type", th.StringType),
         th.Property("duns", th.StringType),
         th.Property("tax-id", th.StringType),
+        th.Property("tax-code", th.StringType),
         th.Property("account-number", th.StringType),
+        th.Property("business-entity-id", th.IntegerType),
         th.Property("corporate-url", th.StringType),
         th.Property("website", th.StringType),
+        th.Property("storefront-url", th.StringType),
+        th.Property("online-store", th.StringType),
         th.Property("on-hold", th.BooleanType),
         th.Property("buyer-hold", th.BooleanType),
         th.Property("one-time-supplier", th.BooleanType),
         th.Property("strategic-supplier", th.BooleanType),
-        th.Property("commodity", th.StringType),
+        th.Property("whitelist-dd", th.BooleanType),
+        th.Property("disable-cert-verify", th.BooleanType),
+        th.Property("scope-three-emissions", th.BooleanType),
+        th.Property("do-not-accelerate", th.BooleanType),
+        th.Property("coupa-pay-financing-only", th.BooleanType),
+        th.Property("supplier-community-enablement", th.IntegerType),
+        th.Property("commodity", _flex_object),
+        th.Property("preferred-commodities", _flex_string_or_array),
         th.Property("payment-method", th.StringType),
+        th.Property("payment-term-id-for-api", th.IntegerType),
+        th.Property("payment-terms", _flex_string_or_array),
+        th.Property("price-amount", th.NumberType),
         th.Property(
             "payment-term",
             th.ObjectType(
                 th.Property("id", th.IntegerType),
                 th.Property("code", th.StringType),
+                th.Property("description", th.StringType),
+                th.Property("days-for-net-payment", th.IntegerType),
+                th.Property("days-for-discount-payment", th.IntegerType),
+                th.Property("discount-rate", th.StringType),
+                th.Property("active", th.BooleanType),
             ),
         ),
         th.Property(
@@ -1421,6 +1454,45 @@ class SuppliersStream(CoupaStream):
         th.Property("po-method", th.StringType),
         th.Property("po-email", th.StringType),
         th.Property("po-change-method", th.StringType),
+        th.Property("default-locale", th.StringType),
+        th.Property("inventory-organization", _flex_object),
+        th.Property("savings-pct", th.NumberType),
+        th.Property("coupa-connect-secret", th.StringType),
+        th.Property("scf-configs", _flex_string_or_array),
+        th.Property("dd-settings", _flex_string_or_array),
+        th.Property("allow-cxml-invoicing", th.BooleanType),
+        th.Property("allow-inv-from-connect", th.BooleanType),
+        th.Property("allow-inv-no-backing-doc-from-connect", th.BooleanType),
+        th.Property("allow-inv-unbacked-lines-from-connect", th.BooleanType),
+        th.Property("allow-cn-no-backing-doc-from-connect", th.BooleanType),
+        th.Property("allow-inv-choose-billing-account", th.BooleanType),
+        th.Property("allow-csp-access-without-two-factor", th.BooleanType),
+        th.Property("allow-change-requests", th.BooleanType),
+        th.Property("allow-order-confirmation-item-substitutions", th.BooleanType),
+        th.Property("hold-invoices-for-ap-review", th.BooleanType),
+        th.Property("send-invoices-to-approvals", th.BooleanType),
+        th.Property("invoice-emails", _flex_string_or_array),
+        th.Property("cxml-domain", th.StringType),
+        th.Property("cxml-identity", th.StringType),
+        th.Property("cxml-url", th.StringType),
+        th.Property("cxml-protocol", th.StringType),
+        th.Property("cxml-secret", th.StringType),
+        th.Property("cxml-http-username", th.StringType),
+        th.Property("cxml-http-password", th.StringType),
+        th.Property("cxml-ssl-version", th.StringType),
+        th.Property("cxml-supplier-domain", th.StringType),
+        th.Property("cxml-supplier-identity", th.StringType),
+        th.Property("cxml-invoice-buyer-domain", th.StringType),
+        th.Property("cxml-invoice-buyer-identity", th.StringType),
+        th.Property("cxml-invoice-supplier-domain", th.StringType),
+        th.Property("cxml-invoice-supplier-identity", th.StringType),
+        th.Property("cxml-invoice-secret", th.StringType),
+        th.Property("enterprise", _flex_object),
+        th.Property("parent", _flex_object),
+        th.Property("account-types", _flex_array),
+        th.Property("restricted-account-types", _flex_array),
+        th.Property("business-groups", _flex_array),
+        th.Property("payment-types", _flex_array),
         th.Property(
             "primary-contact",
             th.ObjectType(
@@ -1436,128 +1508,26 @@ class SuppliersStream(CoupaStream):
                 th.Property("name-fullname", th.StringType),
                 th.Property("notes", th.StringType),
                 th.Property("active", th.BooleanType),
-                th.Property(
-                    "purposes",
-                    th.ArrayType(th.CustomType({"type": ["object", "string"]})),
-                ),
-                th.Property(
-                    "updated-by",
-                    th.CustomType({"type": ["object", "string"]}),
-                ),
+                th.Property("purposes", _flex_array),
+                th.Property("updated-by", _flex_object),
             ),
         ),
-        th.Property(
-            "primary-address",
-            th.ObjectType(
-                th.Property("id", th.IntegerType),
-                th.Property("name", th.StringType),
-                th.Property("street1", th.StringType),
-                th.Property("street2", th.StringType),
-                th.Property("city", th.StringType),
-                th.Property("state", th.StringType),
-                th.Property("postal-code", th.StringType),
-                th.Property(
-                    "country",
-                    th.ObjectType(
-                        th.Property("id", th.IntegerType),
-                        th.Property("code", th.StringType),
-                    ),
-                ),
-            ),
-        ),
-        th.Property(
-            "contacts",
-            th.ArrayType(th.CustomType({"type": ["object", "string"]})),
-        ),
-        th.Property(
-            "remit-to-addresses",
-            th.ArrayType(
-                th.ObjectType(
-                    th.Property("id", th.IntegerType),
-                    th.Property("name", th.StringType),
-                    th.Property("street1", th.StringType),
-                    th.Property("street2", th.StringType),
-                    th.Property("city", th.StringType),
-                    th.Property("state", th.StringType),
-                    th.Property("postal-code", th.StringType),
-                    th.Property(
-                        "country",
-                        th.ObjectType(
-                            th.Property("id", th.IntegerType),
-                            th.Property("code", th.StringType),
-                        ),
-                    ),
-                ),
-            ),
-        ),
-        th.Property(
-            "supplier-addresses",
-            th.ArrayType(
-                th.ObjectType(
-                    th.Property("id", th.IntegerType),
-                    th.Property("name", th.StringType),
-                    th.Property("street1", th.StringType),
-                    th.Property("street2", th.StringType),
-                    th.Property("city", th.StringType),
-                    th.Property("state", th.StringType),
-                    th.Property("postal-code", th.StringType),
-                    th.Property(
-                        "country",
-                        th.ObjectType(
-                            th.Property("id", th.IntegerType),
-                            th.Property("code", th.StringType),
-                        ),
-                    ),
-                ),
-            ),
-        ),
-        th.Property("default-locale", th.StringType),
-        th.Property("allow-cxml-invoicing", th.BooleanType),
-        th.Property("allow-inv-from-connect", th.BooleanType),
-        th.Property("allow-inv-no-backing-doc-from-connect", th.BooleanType),
-        th.Property("allow-inv-unbacked-lines-from-connect", th.BooleanType),
-        th.Property("allow-cn-no-backing-doc-from-connect", th.BooleanType),
-        th.Property("allow-csp-access-without-two-factor", th.BooleanType),
-        th.Property("allow-change-requests", th.BooleanType),
-        th.Property("hold-invoices-for-ap-review", th.BooleanType),
-        th.Property("send-invoices-to-approvals", th.BooleanType),
-        th.Property("invoice-emails", th.StringType),
-        th.Property("savings-pct", th.NumberType),
-        th.Property("cxml-domain", th.StringType),
-        th.Property("cxml-identity", th.StringType),
-        th.Property("cxml-url", th.StringType),
-        th.Property("cxml-protocol", th.StringType),
-        th.Property("cxml-supplier-domain", th.StringType),
-        th.Property("cxml-supplier-identity", th.StringType),
-        th.Property(
-            "diversities",
-            th.ArrayType(
-                th.ObjectType(
-                    th.Property("id", th.IntegerType),
-                    th.Property("name", th.StringType),
-                ),
-            ),
-        ),
-        th.Property(
-            "tags",
-            th.ArrayType(
-                th.ObjectType(
-                    th.Property("id", th.IntegerType),
-                    th.Property("name", th.StringType),
-                ),
-            ),
-        ),
-        th.Property("scope-three-emissions", th.BooleanType),
-        th.Property("do-not-accelerate", th.BooleanType),
-        th.Property("created-at", th.DateTimeType),
-        th.Property("updated-at", th.DateTimeType),
-        th.Property(
-            "created-by",
-            th.CustomType({"type": ["object", "string"]}),
-        ),
-        th.Property(
-            "updated-by",
-            th.CustomType({"type": ["object", "string"]}),
-        ),
-        th.Property("custom-fields", th.CustomType({"type": ["object", "string"]})),
+        th.Property("primary-address", _flex_object),
+        th.Property("contacts", _flex_array),
+        th.Property("remit-to-addresses", _flex_array),
+        th.Property("supplier-addresses", _flex_array),
+        th.Property("customer-support-contacts", _flex_array),
+        th.Property("supplier-information", _flex_array),
+        th.Property("diversities", _flex_array),
+        th.Property("diversity-categories", _flex_array),
+        th.Property("tags", _flex_array),
+        th.Property("taggings", _flex_array),
+        th.Property("supplier_classification_detail", _flex_object),
+        th.Property("supplier_enterprise_detail", _flex_object),
+        th.Property("supplier_insurance_detail", _flex_object),
+        th.Property("supplier_risk_detail", _flex_object),
+        th.Property("supplier_tax_detail", _flex_object),
+        th.Property("custom-fields", _flex_object),
+        th.Property("created-by", _flex_object),
+        th.Property("updated-by", _flex_object),
     ).to_dict()
