@@ -1416,7 +1416,7 @@ class SuppliersStream(CoupaStream):
             ),
         ),
         th.Property("invoice-matching-level", th.StringType),
-        th.Property("order-confirmation-level", th.IntegerType),
+        th.Property("order-confirmation-level", th.StringType),
         th.Property("confirm-by-hrs", th.NumberType),
         th.Property("po-method", th.StringType),
         th.Property("po-email", th.StringType),
