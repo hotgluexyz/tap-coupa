@@ -1393,6 +1393,7 @@ class SuppliersStream(CoupaStream):
     _flex_object = th.CustomType({"type": ["object", "string"]})
     _flex_array = th.ArrayType(th.CustomType({"type": ["object", "string"]}))
     _flex_string_or_array = th.CustomType({"type": ["string", "array"]})
+    _flex_string_or_number = th.CustomType({"type": ["string", "number"]})
 
     schema = th.PropertiesList(
         th.Property("id", th.IntegerType),
@@ -1428,35 +1429,18 @@ class SuppliersStream(CoupaStream):
         th.Property("payment-method", th.StringType),
         th.Property("payment-term-id-for-api", th.IntegerType),
         th.Property("payment-terms", _flex_string_or_array),
-        th.Property("price-amount", th.NumberType),
-        th.Property(
-            "payment-term",
-            th.ObjectType(
-                th.Property("id", th.IntegerType),
-                th.Property("code", th.StringType),
-                th.Property("description", th.StringType),
-                th.Property("days-for-net-payment", th.IntegerType),
-                th.Property("days-for-discount-payment", th.IntegerType),
-                th.Property("discount-rate", th.StringType),
-                th.Property("active", th.BooleanType),
-            ),
-        ),
-        th.Property(
-            "shipping-term",
-            th.ObjectType(
-                th.Property("id", th.IntegerType),
-                th.Property("code", th.StringType),
-            ),
-        ),
+        th.Property("price-amount", _flex_string_or_number),
+        th.Property("payment-term", _flex_object),
+        th.Property("shipping-term", _flex_object),
         th.Property("invoice-matching-level", th.StringType),
         th.Property("order-confirmation-level", th.StringType),
-        th.Property("confirm-by-hrs", th.NumberType),
+        th.Property("confirm-by-hrs", _flex_string_or_number),
         th.Property("po-method", th.StringType),
         th.Property("po-email", th.StringType),
         th.Property("po-change-method", th.StringType),
         th.Property("default-locale", th.StringType),
         th.Property("inventory-organization", _flex_object),
-        th.Property("savings-pct", th.NumberType),
+        th.Property("savings-pct", _flex_string_or_number),
         th.Property("coupa-connect-secret", th.StringType),
         th.Property("scf-configs", _flex_string_or_array),
         th.Property("dd-settings", _flex_string_or_array),
