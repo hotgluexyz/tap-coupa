@@ -1421,7 +1421,31 @@ class SuppliersStream(CoupaStream):
         th.Property("po-method", th.StringType),
         th.Property("po-email", th.StringType),
         th.Property("po-change-method", th.StringType),
-        th.Property("primary-contact", th.StringType),
+        th.Property(
+            "primary-contact",
+            th.ObjectType(
+                th.Property("id", th.IntegerType),
+                th.Property("created-at", th.DateTimeType),
+                th.Property("updated-at", th.DateTimeType),
+                th.Property("email", th.StringType),
+                th.Property("name-prefix", th.StringType),
+                th.Property("name-suffix", th.StringType),
+                th.Property("name-additional", th.StringType),
+                th.Property("name-given", th.StringType),
+                th.Property("name-family", th.StringType),
+                th.Property("name-fullname", th.StringType),
+                th.Property("notes", th.StringType),
+                th.Property("active", th.BooleanType),
+                th.Property(
+                    "purposes",
+                    th.ArrayType(th.CustomType({"type": ["object", "string"]})),
+                ),
+                th.Property(
+                    "updated-by",
+                    th.CustomType({"type": ["object", "string", "null"]}),
+                ),
+            ),
+        ),
         th.Property(
             "primary-address",
             th.ObjectType(
@@ -1443,14 +1467,7 @@ class SuppliersStream(CoupaStream):
         ),
         th.Property(
             "contacts",
-            th.ArrayType(
-                th.ObjectType(
-                    th.Property("id", th.IntegerType),
-                    th.Property("name", th.StringType),
-                    th.Property("email", th.StringType),
-                    th.Property("phone", th.StringType),
-                ),
-            ),
+            th.ArrayType(th.CustomType({"type": ["object", "string"]})),
         ),
         th.Property(
             "remit-to-addresses",
@@ -1536,18 +1553,11 @@ class SuppliersStream(CoupaStream):
         th.Property("updated-at", th.DateTimeType),
         th.Property(
             "created-by",
-            th.ObjectType(
-                th.Property("id", th.IntegerType),
-                th.Property("login", th.StringType),
-                th.Property("email", th.StringType),
-            ),
+            th.CustomType({"type": ["object", "string", "null"]}),
         ),
         th.Property(
             "updated-by",
-            th.ObjectType(
-                th.Property("id", th.IntegerType),
-                th.Property("login", th.StringType),
-                th.Property("email", th.StringType),
-            ),
+            th.CustomType({"type": ["object", "string", "null"]}),
         ),
+        th.Property("custom-fields", th.CustomType({"type": ["object", "string", "null"]})),
     ).to_dict()
