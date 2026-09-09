@@ -39,6 +39,8 @@ The tap requires the following configuration:
 - `scope` (optional): OAuth2 scope, defaults to "core.common.read core.invoice.read"
 - `start_date` (optional): Start date for incremental replication, defaults to "2000-01-01T00:00:00.000Z"
 - `limit` (optional): Number of records per page, defaults to 50
+- `fetch_parallelism` (optional): Parallel API page workers for **invoices** and **suppliers**, defaults to 15
+- `invoice_download_parallelism` (optional): Parallel workers for invoice scan/attachment downloads, defaults to 15
 
 ## Streams
 
@@ -83,6 +85,8 @@ Fetches supplier (vendor) records from the Coupa API with incremental replicatio
 - Optional filters from **`--selected-filters`**, e.g. `status=active` or `number[in]=...`
 
 **OAuth scope**: `core.supplier.read` (add to your OIDC client and `scope` config)
+
+**Performance**: Uses the same parallel page fetching as **invoices** - up to `fetch_parallelism` API requests in flight per batch (default 15, ~1000 records per batch with `limit=50`).
 
 ## Usage
 

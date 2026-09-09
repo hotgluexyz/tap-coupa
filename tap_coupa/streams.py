@@ -13,7 +13,7 @@ import requests
 
 from hotglue_singer_sdk import typing as th  # JSON Schema typing helpers
 
-from tap_coupa.client import BATCH_SIZE, CoupaStream
+from tap_coupa.client import CoupaStream
 
 logger = logging.getLogger(__name__)
 
@@ -788,123 +788,16 @@ class InvoicesStream(CoupaStream):
             record["invoice_scan_zip"] = scan_zip if iid in scan_ok_ids else ""
             record["invoice_attachment_zip"] = att_zip if iid in att_ok_ids else ""
 
-    def _fetch_one_page(
-        self, context: Optional[dict], page_token: Optional[Any]
-    ) -> Tuple[Optional[Any], list, Optional[Any]]:
-        """Fetch one page using SDK path: prepare_request (auth) -> _request -> update_sync_costs. Retries get fresh token."""
-
-        def do_fetch():
-            prepared_request = self.prepare_request(
-                context, next_page_token=page_token
-            )
-            resp = self._request(prepared_request, context)
-            records = list(self.parse_response(resp))
-            next_token = self.get_next_page_token(resp, page_token)
-            return (resp, records, next_token)
-
-        response, records, next_token = self.request_decorator(do_fetch)()
-        params = self.get_url_params(context, page_token)
-        logger.info(
-            "API call for offset=%s, limit=%s successful, records=%s",
-            params.get("offset", ""),
-            params.get("limit", ""),
-            len(records),
+    def _fetch_parallelism(self) -> int:
+        """Parallel workers for paginated API fetches (invoices, suppliers, etc.)."""
+        return self.config.get("fetch_parallelism") or self.config.get(
+            "invoice_fetch_parallelism", 15
         )
-        return (page_token, records, next_token)
-
     def get_records(self, context: Optional[dict]) -> Iterable[dict]:
-        """Fetch in batches: STEP 1 tokens → STEP 2 parallel page fetch → STEP 3 flatten by offset →
-        STEP 4 scan/attachment zips → STEP 5 yield records → STEP 6 log → STEP 7 next batch."""
-        max_workers = self.config.get("invoice_fetch_parallelism", 15)
-        limit = self.config.get("limit", 50)
-        pages_per_batch = max(1, BATCH_SIZE // limit)
-        resume_from_offset = self.config.get("resume_from_offset")
-        if resume_from_offset is not None and resume_from_offset > 0:
-            page_index = (resume_from_offset - 1) // limit
-            batch_index = page_index // pages_per_batch
-            logger.info(
-                "Resuming from offset=%s (batch_index=%s, page_index=%s)",
-                resume_from_offset,
-                batch_index,
-                page_index,
-            )
-        else:
-            batch_index = 0
-        start_date = (
-            self.get_starting_timestamp(context)
-            if self.replication_key
-            else None
-        )
-        date_str = (
-            start_date.isoformat() if start_date is not None else "none"
-        )
-
-        with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            while True:
-                # STEP 1: tokens for this batch (page indices start_page .. start_page+pages_per_batch)
-                start_page = batch_index * pages_per_batch
-                tokens = [
-                    (None if p == 0 else 1 + p * limit)
-                    for p in range(start_page, start_page + pages_per_batch)
-                ]
-
-                # STEP 2: submit all API calls for current batch, wait for all to complete
-                future_to_token = {
-                    executor.submit(self._fetch_one_page, context, t): t
-                    for t in tokens
-                }
-                results = {}
-                for future in as_completed(future_to_token):
-                    token = future_to_token[future]
-                    try:
-                        _, records, next_token = future.result()
-                    except Exception:
-                        raise
-                    results[token] = (records, next_token)
-
-                # STEP 3: sort page tokens (None = first page, then 51, 101, ...) and flatten into batch_records
-                sorted_tokens = sorted(
-                    results.keys(),
-                    key=lambda t: (t is not None, t or 0),
-                )
-                batch_record_count = 0
-                done = False
-                batch_records: list = []
-                for token in sorted_tokens:
-                    records, next_token = results[token]
-                    for record in records:
-                        batch_records.append(record)
-                    if next_token is None:
-                        done = True
-
-                # STEP 4: parallel scan zip, then parallel attachment zip; set invoice_scan_zip / invoice_attachment_zip
-                self._annotate_batch_zip_fields(batch_records)
-
-                # STEP 5: emit records to Singer in API order
-                for record in batch_records:
-                    yield record
-                    batch_record_count += 1
-
-                # STEP 6: log this batch (offsets + count)
-                offset_start = 1 if sorted_tokens[0] is None else sorted_tokens[0]
-                offset_end = (
-                    sorted_tokens[-1]
-                    if sorted_tokens[-1] is not None
-                    else 1
-                )
-                logger.info(
-                    "Process batch: offset_start=%s, offset_end=%s, limit=%s, updated_at=%s, record_count=%s",
-                    offset_start,
-                    offset_end,
-                    limit,
-                    date_str,
-                    batch_record_count,
-                )
-                if done:
-                    break
-
-                # STEP 7: advance to next page batch (or exit loop above when no more pages)
-                batch_index += 1
+        """Parallel page fetch (from CoupaStream) plus batch scan/attachment zip downloads."""
+        for batch_records in self._iter_parallel_batches(context):
+            self._annotate_batch_zip_fields(batch_records)
+            yield from batch_records
 
 
 
