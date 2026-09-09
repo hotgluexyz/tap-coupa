@@ -9,11 +9,13 @@ from hotglue_singer_sdk.helpers.capabilities import AlertingLevel
 from tap_coupa.streams import InvoicesStream
 from tap_coupa.streams import InvoiceScansStream
 from tap_coupa.streams import InvoiceAttachmentsStream
+from tap_coupa.streams import SuppliersStream
 
 STREAM_TYPES = [
     InvoicesStream,
     InvoiceScansStream,
     InvoiceAttachmentsStream,
+    SuppliersStream,
 ]
 
 

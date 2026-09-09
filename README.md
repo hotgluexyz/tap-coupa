@@ -25,7 +25,7 @@ The tap requires the following configuration:
   "instance_name": "your-instance-name",
   "client_id": "your-client-id",
   "client_secret": "your-client-secret",
-  "scope": "core.common.read core.invoice.read",
+  "scope": "core.common.read core.invoice.read core.suppliers.read",
   "start_date": "2000-01-01T00:00:00.000Z",
   "limit": 50
 }
@@ -67,6 +67,22 @@ Rows filtered out by the stream mapper still appear in the stream but get empty 
 - Attachments: `sync-output/invoice_attachments/invoice_attachments_batch_<utc>.zip`
 
 If `JOB_ID` is set, sync output defaults to `/home/hotglue/{JOB_ID}/sync-output/`; otherwise `./`.
+
+### suppliers
+
+Fetches supplier (vendor) records from the Coupa API with incremental replication using the `updated-at` field.
+
+**Replication Method**: Incremental (uses `updated-at` as replication key)
+
+**API Endpoint**: `GET /api/suppliers`
+
+**Query Parameters**:
+- `limit`: Number of records per page (default: 50, max 50)
+- `offset`: Pagination offset
+- `updated_at[gt]`: Filter for suppliers updated after this date
+- Optional filters from **`--selected-filters`**, e.g. `status=active` or `number[in]=...`
+
+**OAuth scope**: `core.suppliers.read`
 
 ## Usage
 

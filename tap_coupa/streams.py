@@ -1373,3 +1373,181 @@ class InvoiceAttachmentsStream(CoupaStream):
     def get_records(self, context: Optional[dict]) -> Iterable[dict]:
         """Not used - downloads are handled in sync() method."""
         return []
+
+
+class SuppliersStream(CoupaStream):
+    """Define suppliers stream."""
+
+    name = "suppliers"
+    path = "suppliers"
+    primary_keys = ["id"]
+    replication_key = "updated-at"
+
+    schema = th.PropertiesList(
+        th.Property("id", th.IntegerType),
+        th.Property("name", th.StringType),
+        th.Property("number", th.StringType),
+        th.Property("display-name", th.StringType),
+        th.Property("status", th.StringType),
+        th.Property("supplier-status", th.StringType),
+        th.Property("duns", th.StringType),
+        th.Property("tax-id", th.StringType),
+        th.Property("account-number", th.StringType),
+        th.Property("corporate-url", th.StringType),
+        th.Property("website", th.StringType),
+        th.Property("on-hold", th.BooleanType),
+        th.Property("buyer-hold", th.BooleanType),
+        th.Property("one-time-supplier", th.BooleanType),
+        th.Property("strategic-supplier", th.BooleanType),
+        th.Property("commodity", th.StringType),
+        th.Property("payment-method", th.StringType),
+        th.Property(
+            "payment-term",
+            th.ObjectType(
+                th.Property("id", th.IntegerType),
+                th.Property("code", th.StringType),
+            ),
+        ),
+        th.Property(
+            "shipping-term",
+            th.ObjectType(
+                th.Property("id", th.IntegerType),
+                th.Property("code", th.StringType),
+            ),
+        ),
+        th.Property("invoice-matching-level", th.StringType),
+        th.Property("order-confirmation-level", th.IntegerType),
+        th.Property("confirm-by-hrs", th.NumberType),
+        th.Property("po-method", th.StringType),
+        th.Property("po-email", th.StringType),
+        th.Property("po-change-method", th.StringType),
+        th.Property("primary-contact", th.StringType),
+        th.Property(
+            "primary-address",
+            th.ObjectType(
+                th.Property("id", th.IntegerType),
+                th.Property("name", th.StringType),
+                th.Property("street1", th.StringType),
+                th.Property("street2", th.StringType),
+                th.Property("city", th.StringType),
+                th.Property("state", th.StringType),
+                th.Property("postal-code", th.StringType),
+                th.Property(
+                    "country",
+                    th.ObjectType(
+                        th.Property("id", th.IntegerType),
+                        th.Property("code", th.StringType),
+                    ),
+                ),
+            ),
+        ),
+        th.Property(
+            "contacts",
+            th.ArrayType(
+                th.ObjectType(
+                    th.Property("id", th.IntegerType),
+                    th.Property("name", th.StringType),
+                    th.Property("email", th.StringType),
+                    th.Property("phone", th.StringType),
+                ),
+            ),
+        ),
+        th.Property(
+            "remit-to-addresses",
+            th.ArrayType(
+                th.ObjectType(
+                    th.Property("id", th.IntegerType),
+                    th.Property("name", th.StringType),
+                    th.Property("street1", th.StringType),
+                    th.Property("street2", th.StringType),
+                    th.Property("city", th.StringType),
+                    th.Property("state", th.StringType),
+                    th.Property("postal-code", th.StringType),
+                    th.Property(
+                        "country",
+                        th.ObjectType(
+                            th.Property("id", th.IntegerType),
+                            th.Property("code", th.StringType),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        th.Property(
+            "supplier-addresses",
+            th.ArrayType(
+                th.ObjectType(
+                    th.Property("id", th.IntegerType),
+                    th.Property("name", th.StringType),
+                    th.Property("street1", th.StringType),
+                    th.Property("street2", th.StringType),
+                    th.Property("city", th.StringType),
+                    th.Property("state", th.StringType),
+                    th.Property("postal-code", th.StringType),
+                    th.Property(
+                        "country",
+                        th.ObjectType(
+                            th.Property("id", th.IntegerType),
+                            th.Property("code", th.StringType),
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        th.Property("default-locale", th.StringType),
+        th.Property("allow-cxml-invoicing", th.BooleanType),
+        th.Property("allow-inv-from-connect", th.BooleanType),
+        th.Property("allow-inv-no-backing-doc-from-connect", th.BooleanType),
+        th.Property("allow-inv-unbacked-lines-from-connect", th.BooleanType),
+        th.Property("allow-cn-no-backing-doc-from-connect", th.BooleanType),
+        th.Property("allow-csp-access-without-two-factor", th.BooleanType),
+        th.Property("allow-change-requests", th.BooleanType),
+        th.Property("hold-invoices-for-ap-review", th.BooleanType),
+        th.Property("send-invoices-to-approvals", th.BooleanType),
+        th.Property("invoice-emails", th.StringType),
+        th.Property("savings-pct", th.NumberType),
+        th.Property("cxml-domain", th.StringType),
+        th.Property("cxml-identity", th.StringType),
+        th.Property("cxml-url", th.StringType),
+        th.Property("cxml-protocol", th.StringType),
+        th.Property("cxml-supplier-domain", th.StringType),
+        th.Property("cxml-supplier-identity", th.StringType),
+        th.Property(
+            "diversities",
+            th.ArrayType(
+                th.ObjectType(
+                    th.Property("id", th.IntegerType),
+                    th.Property("name", th.StringType),
+                ),
+            ),
+        ),
+        th.Property(
+            "tags",
+            th.ArrayType(
+                th.ObjectType(
+                    th.Property("id", th.IntegerType),
+                    th.Property("name", th.StringType),
+                ),
+            ),
+        ),
+        th.Property("scope-three-emissions", th.BooleanType),
+        th.Property("do-not-accelerate", th.BooleanType),
+        th.Property("created-at", th.DateTimeType),
+        th.Property("updated-at", th.DateTimeType),
+        th.Property(
+            "created-by",
+            th.ObjectType(
+                th.Property("id", th.IntegerType),
+                th.Property("login", th.StringType),
+                th.Property("email", th.StringType),
+            ),
+        ),
+        th.Property(
+            "updated-by",
+            th.ObjectType(
+                th.Property("id", th.IntegerType),
+                th.Property("login", th.StringType),
+                th.Property("email", th.StringType),
+            ),
+        ),
+    ).to_dict()
