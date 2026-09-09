@@ -1,12 +1,13 @@
 """Stream type classes for tap-coupa."""
 
+import json
 import os
 import logging
 import queue
 import threading
 import zipfile
 from datetime import datetime
-from typing import Any, Dict, Optional, Iterable, Set, Tuple
+from typing import Any, Dict, List, Optional, Iterable, Set, Tuple
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
@@ -461,11 +462,13 @@ class InvoicesStream(CoupaStream):
                     "label": "Supplier ID",
                     "supported_operators": ["IN", "EQ"],
                     "target_field": "supplier[id]",
+                    "options": "reference_data.suppliers.id",
                 },
                 "supplier_name": {
                     "label": "Supplier name",
                     "supported_operators": ["IN", "EQ"],
                     "target_field": "supplier[name]",
+                    "options": "reference_data.suppliers.name",
                 },
             },
         }
@@ -1408,3 +1411,39 @@ class SuppliersStream(CoupaStream):
         th.Property("created-by", _flex_object),
         th.Property("updated-by", _flex_object),
     ).to_dict()
+
+    def get_available_filters_reference_data(
+        self, fields_to_include: Set[str]
+    ) -> List[Dict[str, Any]]:
+        """Return supplier lookup rows for invoice filter dropdowns.
+
+        Uses Coupa's ``fields`` query parameter to fetch only the columns needed
+        for filter options. Pages are fetched in parallel batches (same pattern
+        as sync) via ``fetch_parallelism``. Skips incremental replication filters
+        so the full supplier list is available regardless of ``start_date``.
+        """
+        records: List[Dict[str, Any]] = []
+
+        coupa_fields = sorted(
+            field
+            for field in fields_to_include
+            if field in {"id", "name", "number", "display-name", "status"}
+        )
+        if not coupa_fields:
+            coupa_fields = ["id", "name"]
+
+        base_params = {"fields": json.dumps(coupa_fields)}
+        for batch in self._iter_parallel_page_batches(base_params):
+            for row in batch:
+                filtered = {
+                    key: row[key] for key in fields_to_include if key in row
+                }
+                if filtered:
+                    records.append(filtered)
+
+        self.logger.info(
+            "Loaded %s supplier reference data record(s) for filter options (fields=%s).",
+            len(records),
+            sorted(fields_to_include),
+        )
+        return records

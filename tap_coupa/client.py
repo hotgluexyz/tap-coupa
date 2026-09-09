@@ -324,6 +324,93 @@ class CoupaStream(RESTStream):
         )
         return (page_token, records, next_token)
 
+    def _fetch_one_page_with_params(
+        self,
+        page_token: Optional[Any],
+        base_params: Dict[str, Any],
+    ) -> Tuple[Optional[Any], List[dict], Optional[Any]]:
+        """Fetch one page with explicit query params (no incremental replication filters)."""
+
+        def do_fetch():
+            params = dict(base_params)
+            params["limit"] = self.config.get("limit", 50)
+            params["offset"] = 1 if page_token is None else page_token
+            prepared_request = self.build_prepared_request(
+                method="GET",
+                url=f"{self.url_base}{self.path}",
+                params=params,
+                headers=self.http_headers,
+            )
+            resp = self._request(prepared_request, None)
+            records = list(self.parse_response(resp))
+            next_token = self.get_next_page_token(resp, page_token)
+            return (resp, records, next_token)
+
+        _response, records, next_token = self.request_decorator(do_fetch)()
+        self.logger.info(
+            "API call for offset=%s, limit=%s successful, records=%s",
+            1 if page_token is None else page_token,
+            self.config.get("limit", 50),
+            len(records),
+        )
+        return (page_token, records, next_token)
+
+    def _iter_parallel_page_batches(
+        self, base_params: Dict[str, Any]
+    ) -> Iterator[List[dict]]:
+        """Fetch paginated records in parallel batches using fixed query params."""
+        max_workers = self._fetch_parallelism()
+        limit = self.config.get("limit", 50)
+        pages_per_batch = max(1, BATCH_SIZE // limit)
+        batch_index = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            while True:
+                start_page = batch_index * pages_per_batch
+                tokens = [
+                    (None if p == 0 else 1 + p * limit)
+                    for p in range(start_page, start_page + pages_per_batch)
+                ]
+                future_to_token = {
+                    executor.submit(
+                        self._fetch_one_page_with_params, t, base_params
+                    ): t
+                    for t in tokens
+                }
+                results = {}
+                for future in as_completed(future_to_token):
+                    token = future_to_token[future]
+                    _page_token, records, next_token = future.result()
+                    results[token] = (records, next_token)
+
+                sorted_tokens = sorted(
+                    results.keys(),
+                    key=lambda t: (t is not None, t or 0),
+                )
+                done = False
+                batch_records: List[dict] = []
+                for token in sorted_tokens:
+                    records, next_token = results[token]
+                    batch_records.extend(records)
+                    if next_token is None:
+                        done = True
+
+                offset_start = 1 if sorted_tokens[0] is None else sorted_tokens[0]
+                offset_end = (
+                    sorted_tokens[-1] if sorted_tokens[-1] is not None else 1
+                )
+                self.logger.info(
+                    "Process batch: offset_start=%s, offset_end=%s, limit=%s, record_count=%s",
+                    offset_start,
+                    offset_end,
+                    limit,
+                    len(batch_records),
+                )
+                yield batch_records
+                if done:
+                    break
+                batch_index += 1
+
     def _iter_parallel_batches(self, context: Optional[dict]) -> Iterator[List[dict]]:
         """Fetch paginated records in parallel batches (same pattern as invoices)."""
         max_workers = self._fetch_parallelism()
