@@ -1290,19 +1290,20 @@ class SuppliersStream(CoupaStream):
     _flex_array = th.ArrayType(th.CustomType({"type": ["object", "string"]}))
     _flex_string_or_array = th.CustomType({"type": ["string", "array"]})
     _flex_string_or_number = th.CustomType({"type": ["string", "number"]})
+    _flex_string_or_integer = th.CustomType({"type": ["string", "integer"]})
 
     schema = th.PropertiesList(
         th.Property("id", th.IntegerType),
         th.Property("created-at", th.DateTimeType),
         th.Property("updated-at", th.DateTimeType),
         th.Property("name", th.StringType),
-        th.Property("number", th.StringType),
+        th.Property("number", _flex_string_or_integer),
         th.Property("display-name", th.StringType),
         th.Property("status", th.StringType),
         th.Property("supplier-status", th.StringType),
         th.Property("type", th.StringType),
         th.Property("duns", th.StringType),
-        th.Property("tax-id", th.StringType),
+        th.Property("tax-id", _flex_string_or_integer),
         th.Property("tax-code", _flex_object),
         th.Property("account-number", th.StringType),
         th.Property("business-entity-id", th.IntegerType),
@@ -1361,11 +1362,11 @@ class SuppliersStream(CoupaStream):
         th.Property("cxml-http-password", th.StringType),
         th.Property("cxml-ssl-version", th.StringType),
         th.Property("cxml-supplier-domain", th.StringType),
-        th.Property("cxml-supplier-identity", th.StringType),
+        th.Property("cxml-supplier-identity", _flex_string_or_integer),
         th.Property("cxml-invoice-buyer-domain", th.StringType),
-        th.Property("cxml-invoice-buyer-identity", th.StringType),
+        th.Property("cxml-invoice-buyer-identity", _flex_string_or_integer),
         th.Property("cxml-invoice-supplier-domain", th.StringType),
-        th.Property("cxml-invoice-supplier-identity", th.StringType),
+        th.Property("cxml-invoice-supplier-identity", _flex_string_or_integer),
         th.Property("cxml-invoice-secret", th.StringType),
         th.Property("enterprise", _flex_object),
         th.Property("parent", _flex_object),

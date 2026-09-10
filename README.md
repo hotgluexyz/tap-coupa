@@ -25,7 +25,7 @@ The tap requires the following configuration:
   "instance_name": "your-instance-name",
   "client_id": "your-client-id",
   "client_secret": "your-client-secret",
-  "scope": "core.common.read core.invoice.read core.suppliers.read",
+  "scope": "core.common.read core.invoice.read core.supplier.read",
   "start_date": "2000-01-01T00:00:00.000Z",
   "limit": 50
 }
