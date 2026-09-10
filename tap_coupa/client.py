@@ -1,6 +1,7 @@
 """REST client handling, including CoupaStream base class."""
 
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
@@ -41,46 +42,59 @@ class OAuth2Authenticator:
         self.token_url = f"https://{instance_name}.coupahost.com/oauth2/token"
         self._access_token = None
         self._token_expires_at = None
+        self._token_lock = threading.Lock()
+
+    def _token_is_valid(self) -> bool:
+        return bool(
+            self._access_token
+            and self._token_expires_at
+            and time.time() < self._token_expires_at - 60
+        )
 
     def get_access_token(self) -> str:
-        """Get access token, refreshing if necessary."""
-        # Check if we have a valid token
-        if self._access_token and self._token_expires_at:
-            if time.time() < self._token_expires_at - 60:  # Refresh 60 seconds before expiry
+        """Get access token, refreshing if necessary.
+
+        Parallel page workers share this authenticator; the lock serializes
+        check-and-refresh so only one token request is issued at a time.
+        """
+        if self._token_is_valid():
+            return self._access_token
+
+        with self._token_lock:
+            if self._token_is_valid():
                 return self._access_token
 
-        # Request new token - using exact pattern from working auth.py
-        # Headers from the curl command
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
-        # The body data (URL-encoded) - exact same structure as auth.py
-        payload = {
-            'client_id': self.client_id,
-            'grant_type': 'client_credentials',
-            'scope': self.scope,
-            'client_secret': self.client_secret
-        }
-        
-        try:
-            # Making the POST request - exact same as auth.py
-            response = requests.post(self.token_url, headers=headers, data=payload, timeout=30)
-        except Exception as e:
-            logging.error(f"Exception during token request: {e}")
-            raise InvalidCredentialsError(f"Exception during OAuth2 token request: {e}")
-        
-        if response.status_code != 200:
-            raise InvalidCredentialsError(
-                f"Failed to get OAuth2 token: {response.status_code} {response.text}"
-            )
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            payload = {
+                "client_id": self.client_id,
+                "grant_type": "client_credentials",
+                "scope": self.scope,
+                "client_secret": self.client_secret,
+            }
 
-        token_data = response.json()
-        self._access_token = token_data["access_token"]
-        expires_in = token_data.get("expires_in", 3600)  # Default to 1 hour if not provided
-        self._token_expires_at = time.time() + expires_in
+            try:
+                response = requests.post(
+                    self.token_url, headers=headers, data=payload, timeout=30
+                )
+            except Exception as e:
+                logging.error(f"Exception during token request: {e}")
+                raise InvalidCredentialsError(
+                    f"Exception during OAuth2 token request: {e}"
+                ) from e
 
-        return self._access_token
+            if response.status_code != 200:
+                raise InvalidCredentialsError(
+                    f"Failed to get OAuth2 token: {response.status_code} {response.text}"
+                )
+
+            token_data = response.json()
+            self._access_token = token_data["access_token"]
+            expires_in = token_data.get("expires_in", 3600)
+            self._token_expires_at = time.time() + expires_in
+
+            return self._access_token
 
     def authenticate_request(self, request: requests.PreparedRequest) -> None:
         """Authenticate the request by adding Bearer token to headers."""
