@@ -110,6 +110,7 @@ class CoupaStream(RESTStream):
         )
         self.requests_session.mount('https://', adapter)
         self.requests_session.mount('http://', adapter)
+        self._authenticator: Optional[OAuth2Authenticator] = None
 
     def setup_selected_filters(self) -> None:
         """Parse selected-filters for this stream into ``_custom_filters`` (query param dict).
@@ -140,15 +141,19 @@ class CoupaStream(RESTStream):
 
     @property
     def authenticator(self) -> OAuth2Authenticator:
-        """Return a new authenticator object."""
-        # Support both 'scope' and 'related_scopes' for backward compatibility
-        scope = self.config.get("scope") or self.config.get("related_scopes", "core.common.read core.invoice.read")
-        return OAuth2Authenticator(
-            instance_name=self.config["instance_name"],
-            client_id=self.config["client_id"],
-            client_secret=self.config["client_secret"],
-            scope=scope,
-        )
+        """Return the stream-scoped OAuth2 authenticator (shared across parallel workers)."""
+        if self._authenticator is None:
+            # Support both 'scope' and 'related_scopes' for backward compatibility
+            scope = self.config.get("scope") or self.config.get(
+                "related_scopes", "core.common.read core.invoice.read"
+            )
+            self._authenticator = OAuth2Authenticator(
+                instance_name=self.config["instance_name"],
+                client_id=self.config["client_id"],
+                client_secret=self.config["client_secret"],
+                scope=scope,
+            )
+        return self._authenticator
 
     def get_url_params(
         self, context: Optional[dict], next_page_token: Optional[Any]

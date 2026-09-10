@@ -43,12 +43,6 @@ class TapCoupa(Tap):
             description="Deprecated alias for fetch_parallelism (invoices only backward compat).",
         ),
         th.Property(
-            "invoice_download_parallelism",
-            th.IntegerType,
-            default=15,
-            description="Parallel workers for invoice scan/attachment downloads.",
-        ),
-        th.Property(
             "resume_from_offset",
             th.IntegerType,
             description="Optional. Start invoice fetch from this API offset (e.g. 5001) instead of from the beginning.",
