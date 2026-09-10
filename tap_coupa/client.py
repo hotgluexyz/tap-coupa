@@ -1,8 +1,10 @@
 """REST client handling, including CoupaStream base class."""
 
 import logging
+import threading
 import time
-from typing import Any, Dict, Iterable, Optional, Callable
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable, Dict, Iterable, Iterator, List, Optional, Tuple
 
 import backoff
 import requests
@@ -40,46 +42,59 @@ class OAuth2Authenticator:
         self.token_url = f"https://{instance_name}.coupahost.com/oauth2/token"
         self._access_token = None
         self._token_expires_at = None
+        self._token_lock = threading.Lock()
+
+    def _token_is_valid(self) -> bool:
+        return bool(
+            self._access_token
+            and self._token_expires_at
+            and time.time() < self._token_expires_at - 60
+        )
 
     def get_access_token(self) -> str:
-        """Get access token, refreshing if necessary."""
-        # Check if we have a valid token
-        if self._access_token and self._token_expires_at:
-            if time.time() < self._token_expires_at - 60:  # Refresh 60 seconds before expiry
+        """Get access token, refreshing if necessary.
+
+        Parallel page workers share this authenticator; the lock serializes
+        check-and-refresh so only one token request is issued at a time.
+        """
+        if self._token_is_valid():
+            return self._access_token
+
+        with self._token_lock:
+            if self._token_is_valid():
                 return self._access_token
 
-        # Request new token - using exact pattern from working auth.py
-        # Headers from the curl command
-        headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
-        }
-        
-        # The body data (URL-encoded) - exact same structure as auth.py
-        payload = {
-            'client_id': self.client_id,
-            'grant_type': 'client_credentials',
-            'scope': self.scope,
-            'client_secret': self.client_secret
-        }
-        
-        try:
-            # Making the POST request - exact same as auth.py
-            response = requests.post(self.token_url, headers=headers, data=payload, timeout=30)
-        except Exception as e:
-            logging.error(f"Exception during token request: {e}")
-            raise InvalidCredentialsError(f"Exception during OAuth2 token request: {e}")
-        
-        if response.status_code != 200:
-            raise InvalidCredentialsError(
-                f"Failed to get OAuth2 token: {response.status_code} {response.text}"
-            )
+            headers = {
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            payload = {
+                "client_id": self.client_id,
+                "grant_type": "client_credentials",
+                "scope": self.scope,
+                "client_secret": self.client_secret,
+            }
 
-        token_data = response.json()
-        self._access_token = token_data["access_token"]
-        expires_in = token_data.get("expires_in", 3600)  # Default to 1 hour if not provided
-        self._token_expires_at = time.time() + expires_in
+            try:
+                response = requests.post(
+                    self.token_url, headers=headers, data=payload, timeout=30
+                )
+            except Exception as e:
+                logging.error(f"Exception during token request: {e}")
+                raise InvalidCredentialsError(
+                    f"Exception during OAuth2 token request: {e}"
+                ) from e
 
-        return self._access_token
+            if response.status_code != 200:
+                raise InvalidCredentialsError(
+                    f"Failed to get OAuth2 token: {response.status_code} {response.text}"
+                )
+
+            token_data = response.json()
+            self._access_token = token_data["access_token"]
+            expires_in = token_data.get("expires_in", 3600)
+            self._token_expires_at = time.time() + expires_in
+
+            return self._access_token
 
     def authenticate_request(self, request: requests.PreparedRequest) -> None:
         """Authenticate the request by adding Bearer token to headers."""
@@ -109,6 +124,7 @@ class CoupaStream(RESTStream):
         )
         self.requests_session.mount('https://', adapter)
         self.requests_session.mount('http://', adapter)
+        self._authenticator: Optional[OAuth2Authenticator] = None
 
     def setup_selected_filters(self) -> None:
         """Parse selected-filters for this stream into ``_custom_filters`` (query param dict).
@@ -139,15 +155,19 @@ class CoupaStream(RESTStream):
 
     @property
     def authenticator(self) -> OAuth2Authenticator:
-        """Return a new authenticator object."""
-        # Support both 'scope' and 'related_scopes' for backward compatibility
-        scope = self.config.get("scope") or self.config.get("related_scopes", "core.common.read core.invoice.read")
-        return OAuth2Authenticator(
-            instance_name=self.config["instance_name"],
-            client_id=self.config["client_id"],
-            client_secret=self.config["client_secret"],
-            scope=scope,
-        )
+        """Return the stream-scoped OAuth2 authenticator (shared across parallel workers)."""
+        if self._authenticator is None:
+            # Support both 'scope' and 'related_scopes' for backward compatibility
+            scope = self.config.get("scope") or self.config.get(
+                "related_scopes", "core.common.read core.invoice.read"
+            )
+            self._authenticator = OAuth2Authenticator(
+                instance_name=self.config["instance_name"],
+                client_id=self.config["client_id"],
+                client_secret=self.config["client_secret"],
+                scope=scope,
+            )
+        return self._authenticator
 
     def get_url_params(
         self, context: Optional[dict], next_page_token: Optional[Any]
@@ -294,3 +314,193 @@ class CoupaStream(RESTStream):
             "calling function {target} with args {args} and kwargs "
             "{kwargs}".format(**details)
         )
+
+    def _fetch_parallelism(self) -> int:
+        """Parallel workers for paginated API fetches (invoices, suppliers, etc.)."""
+        return self.config.get("fetch_parallelism", 15)
+
+    def _fetch_one_page(
+        self, context: Optional[dict], page_token: Optional[Any]
+    ) -> Tuple[Optional[Any], List[dict], Optional[Any]]:
+        """Fetch one page using SDK path: prepare_request -> _request -> parse."""
+
+        def do_fetch():
+            prepared_request = self.prepare_request(
+                context, next_page_token=page_token
+            )
+            resp = self._request(prepared_request, context)
+            records = list(self.parse_response(resp))
+            next_token = self.get_next_page_token(resp, page_token)
+            return (resp, records, next_token)
+
+        _response, records, next_token = self.request_decorator(do_fetch)()
+        params = self.get_url_params(context, page_token)
+        self.logger.info(
+            "API call for offset=%s, limit=%s successful, records=%s",
+            params.get("offset", ""),
+            params.get("limit", ""),
+            len(records),
+        )
+        return (page_token, records, next_token)
+
+    def _fetch_one_page_with_params(
+        self,
+        page_token: Optional[Any],
+        base_params: Dict[str, Any],
+    ) -> Tuple[Optional[Any], List[dict], Optional[Any]]:
+        """Fetch one page with explicit query params (no incremental replication filters)."""
+
+        def do_fetch():
+            params = dict(base_params)
+            params["limit"] = self.config.get("limit", 50)
+            params["offset"] = 1 if page_token is None else page_token
+            prepared_request = self.build_prepared_request(
+                method="GET",
+                url=f"{self.url_base}{self.path}",
+                params=params,
+                headers=self.http_headers,
+            )
+            resp = self._request(prepared_request, None)
+            records = list(self.parse_response(resp))
+            next_token = self.get_next_page_token(resp, page_token)
+            return (resp, records, next_token)
+
+        _response, records, next_token = self.request_decorator(do_fetch)()
+        self.logger.info(
+            "API call for offset=%s, limit=%s successful, records=%s",
+            1 if page_token is None else page_token,
+            self.config.get("limit", 50),
+            len(records),
+        )
+        return (page_token, records, next_token)
+
+    def _iter_parallel_page_batches(
+        self, base_params: Dict[str, Any]
+    ) -> Iterator[List[dict]]:
+        """Fetch paginated records in parallel batches using fixed query params."""
+        max_workers = self._fetch_parallelism()
+        limit = self.config.get("limit", 50)
+        pages_per_batch = max(1, BATCH_SIZE // limit)
+        batch_index = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            while True:
+                start_page = batch_index * pages_per_batch
+                tokens = [
+                    (None if p == 0 else 1 + p * limit)
+                    for p in range(start_page, start_page + pages_per_batch)
+                ]
+                future_to_token = {
+                    executor.submit(
+                        self._fetch_one_page_with_params, t, base_params
+                    ): t
+                    for t in tokens
+                }
+                results = {}
+                for future in as_completed(future_to_token):
+                    token = future_to_token[future]
+                    _page_token, records, next_token = future.result()
+                    results[token] = (records, next_token)
+
+                sorted_tokens = sorted(
+                    results.keys(),
+                    key=lambda t: (t is not None, t or 0),
+                )
+                done = False
+                batch_records: List[dict] = []
+                for token in sorted_tokens:
+                    records, next_token = results[token]
+                    batch_records.extend(records)
+                    if next_token is None:
+                        done = True
+
+                offset_start = 1 if sorted_tokens[0] is None else sorted_tokens[0]
+                offset_end = (
+                    sorted_tokens[-1] if sorted_tokens[-1] is not None else 1
+                )
+                self.logger.info(
+                    "Process batch: offset_start=%s, offset_end=%s, limit=%s, record_count=%s",
+                    offset_start,
+                    offset_end,
+                    limit,
+                    len(batch_records),
+                )
+                yield batch_records
+                if done:
+                    break
+                batch_index += 1
+
+    def _iter_parallel_batches(self, context: Optional[dict]) -> Iterator[List[dict]]:
+        """Fetch paginated records in parallel batches (same pattern as invoices)."""
+        max_workers = self._fetch_parallelism()
+        limit = self.config.get("limit", 50)
+        pages_per_batch = max(1, BATCH_SIZE // limit)
+        resume_from_offset = self.config.get("resume_from_offset")
+        if resume_from_offset is not None and resume_from_offset > 0 and self.name == "invoices":
+            page_index = (resume_from_offset - 1) // limit
+            batch_index = page_index // pages_per_batch
+            self.logger.info(
+                "Resuming from offset=%s (batch_index=%s, page_index=%s)",
+                resume_from_offset,
+                batch_index,
+                page_index,
+            )
+        else:
+            batch_index = 0
+        start_date = (
+            self.get_starting_timestamp(context) if self.replication_key else None
+        )
+        date_str = start_date.isoformat() if start_date is not None else "none"
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            while True:
+                start_page = batch_index * pages_per_batch
+                tokens = [
+                    (None if p == 0 else 1 + p * limit)
+                    for p in range(start_page, start_page + pages_per_batch)
+                ]
+                future_to_token = {
+                    executor.submit(self._fetch_one_page, context, t): t
+                    for t in tokens
+                }
+                results = {}
+                for future in as_completed(future_to_token):
+                    token = future_to_token[future]
+                    _page_token, records, next_token = future.result()
+                    results[token] = (records, next_token)
+
+                sorted_tokens = sorted(
+                    results.keys(),
+                    key=lambda t: (t is not None, t or 0),
+                )
+                batch_record_count = 0
+                done = False
+                batch_records: List[dict] = []
+                for token in sorted_tokens:
+                    records, next_token = results[token]
+                    batch_records.extend(records)
+                    if next_token is None:
+                        done = True
+
+                offset_start = 1 if sorted_tokens[0] is None else sorted_tokens[0]
+                offset_end = (
+                    sorted_tokens[-1] if sorted_tokens[-1] is not None else 1
+                )
+                batch_record_count = len(batch_records)
+                self.logger.info(
+                    "Process batch: offset_start=%s, offset_end=%s, limit=%s, updated_at=%s, record_count=%s",
+                    offset_start,
+                    offset_end,
+                    limit,
+                    date_str,
+                    batch_record_count,
+                )
+                yield batch_records
+                if done:
+                    break
+                batch_index += 1
+
+    def get_records(self, context: Optional[dict]) -> Iterable[dict]:
+        """Fetch records with parallel page requests (overrides SDK sequential sync)."""
+        for batch_records in self._iter_parallel_batches(context):
+            yield from batch_records

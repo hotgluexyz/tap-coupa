@@ -9,11 +9,13 @@ from hotglue_singer_sdk.helpers.capabilities import AlertingLevel
 from tap_coupa.streams import InvoicesStream
 from tap_coupa.streams import InvoiceScansStream
 from tap_coupa.streams import InvoiceAttachmentsStream
+from tap_coupa.streams import SuppliersStream
 
 STREAM_TYPES = [
     InvoicesStream,
     InvoiceScansStream,
     InvoiceAttachmentsStream,
+    SuppliersStream,
 ]
 
 
@@ -29,6 +31,17 @@ class TapCoupa(Tap):
         th.Property("scope", th.StringType, default="core.common.read core.invoice.read"),
         th.Property("start_date", th.DateTimeType, default="2000-01-01T00:00:00.000Z"),
         th.Property("limit", th.IntegerType, default=50),
+        th.Property(
+            "fetch_parallelism",
+            th.IntegerType,
+            default=15,
+            description="Parallel API page workers for incremental streams (invoices, suppliers).",
+        ),
+        th.Property(
+            "invoice_fetch_parallelism",
+            th.IntegerType,
+            description="Deprecated alias for fetch_parallelism (invoices only backward compat).",
+        ),
         th.Property(
             "resume_from_offset",
             th.IntegerType,
