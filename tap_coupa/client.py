@@ -183,7 +183,7 @@ class CoupaStream(RESTStream):
         if next_page_token:
             params["offset"] = next_page_token
         else:
-            params["offset"] = 1  # Start at offset 1 as shown in curl example
+            params["offset"] = 0
 
         replication_key_value = None
         if self.replication_key:
@@ -226,9 +226,8 @@ class CoupaStream(RESTStream):
             if len(records) < limit:
                 return None
 
-            # Calculate next offset
             if previous_token is None:
-                next_offset = 1 + limit
+                next_offset = limit
             else:
                 next_offset = previous_token + limit
 
@@ -353,7 +352,7 @@ class CoupaStream(RESTStream):
         def do_fetch():
             params = dict(base_params)
             params["limit"] = self.config.get("limit", 50)
-            params["offset"] = 1 if page_token is None else page_token
+            params["offset"] = 0 if page_token is None else page_token
             prepared_request = self.build_prepared_request(
                 method="GET",
                 url=f"{self.url_base}{self.path}",
@@ -368,7 +367,7 @@ class CoupaStream(RESTStream):
         _response, records, next_token = self.request_decorator(do_fetch)()
         self.logger.info(
             "API call for offset=%s, limit=%s successful, records=%s",
-            1 if page_token is None else page_token,
+            0 if page_token is None else page_token,
             self.config.get("limit", 50),
             len(records),
         )
@@ -387,7 +386,7 @@ class CoupaStream(RESTStream):
             while True:
                 start_page = batch_index * pages_per_batch
                 tokens = [
-                    (None if p == 0 else 1 + p * limit)
+                    (None if p == 0 else p * limit)
                     for p in range(start_page, start_page + pages_per_batch)
                 ]
                 future_to_token = {
@@ -414,9 +413,9 @@ class CoupaStream(RESTStream):
                     if next_token is None:
                         done = True
 
-                offset_start = 1 if sorted_tokens[0] is None else sorted_tokens[0]
+                offset_start = 0 if sorted_tokens[0] is None else sorted_tokens[0]
                 offset_end = (
-                    sorted_tokens[-1] if sorted_tokens[-1] is not None else 1
+                    sorted_tokens[-1] if sorted_tokens[-1] is not None else 0
                 )
                 self.logger.info(
                     "Process batch: offset_start=%s, offset_end=%s, limit=%s, record_count=%s",
@@ -437,7 +436,7 @@ class CoupaStream(RESTStream):
         pages_per_batch = max(1, BATCH_SIZE // limit)
         resume_from_offset = self.config.get("resume_from_offset")
         if resume_from_offset is not None and resume_from_offset > 0 and self.name == "invoices":
-            page_index = (resume_from_offset - 1) // limit
+            page_index = resume_from_offset // limit
             batch_index = page_index // pages_per_batch
             self.logger.info(
                 "Resuming from offset=%s (batch_index=%s, page_index=%s)",
@@ -456,7 +455,7 @@ class CoupaStream(RESTStream):
             while True:
                 start_page = batch_index * pages_per_batch
                 tokens = [
-                    (None if p == 0 else 1 + p * limit)
+                    (None if p == 0 else p * limit)
                     for p in range(start_page, start_page + pages_per_batch)
                 ]
                 future_to_token = {
@@ -482,9 +481,9 @@ class CoupaStream(RESTStream):
                     if next_token is None:
                         done = True
 
-                offset_start = 1 if sorted_tokens[0] is None else sorted_tokens[0]
+                offset_start = 0 if sorted_tokens[0] is None else sorted_tokens[0]
                 offset_end = (
-                    sorted_tokens[-1] if sorted_tokens[-1] is not None else 1
+                    sorted_tokens[-1] if sorted_tokens[-1] is not None else 0
                 )
                 batch_record_count = len(batch_records)
                 self.logger.info(

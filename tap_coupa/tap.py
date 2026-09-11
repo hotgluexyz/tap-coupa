@@ -45,7 +45,7 @@ class TapCoupa(Tap):
         th.Property(
             "resume_from_offset",
             th.IntegerType,
-            description="Optional. Start invoice fetch from this API offset (e.g. 5001) instead of from the beginning.",
+            description="Optional. Start invoice fetch from this API offset (e.g. 5000) instead of from the beginning.",
         ),
     ).to_dict()
 
